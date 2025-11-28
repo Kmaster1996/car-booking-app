@@ -27,15 +27,15 @@ CAR_SPECS = {
 
 # รายชื่ออุปกรณ์ (Volume = คะแนนความกินพื้นที่ต่อชิ้น)
 EQUIPMENT_DB = {
-    "GNSS": {"volume": 50},
-    "Tripod": {"volume": 100},
-    "Pole": {"volume": 20},
-    "Bag": {"volume": 50},
-    "M350 set": {"volume": 300},
-    "Apache3": {"volume": 300},
-    "Apache4": {"volume": 350},
-    "LiDAR": {"volume": 50},
-    "RS10": {"volume": 80},
+    "GNSS": {"volume": 150},
+    "Tripod": {"volume": 120},
+    "Pole": {"volume": 50},
+    "Bag": {"volume": 80},
+    "M350 set": {"volume": 450},
+    "Apache3": {"volume": 400},
+    "Apache4": {"volume": 500},
+    "LiDAR": {"volume": 100},
+    "RS10": {"volume": 150},
     "D270": {"volume": 200},
 }
 
