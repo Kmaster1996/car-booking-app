@@ -98,14 +98,52 @@ try:
     sheet = get_google_sheet()
     data = sheet.get_all_records()
     df = pd.DataFrame(data)
+    
     if df.empty:
         df = pd.DataFrame(columns=["User", "Task", "Car", "People", "Equipment", "Location", "Start_Time", "End_Time"])
     else:
-        df['Start_Time'] = pd.to_datetime(df['Start_Time'])
-        df['End_Time'] = pd.to_datetime(df['End_Time'])
+        # เทคนิคแก้บั๊ก: แปลงคอลัมน์วันที่เป็น String ก่อน -> แล้วค่อยแปลงเป็น Datetime
+        # (ช่วยแก้ปัญหาเวลา Google Sheets ส่งค่ามาแปลกๆ)
+        df['Start_Time'] = pd.to_datetime(df['Start_Time'].astype(str), errors='coerce')
+        df['End_Time'] = pd.to_datetime(df['End_Time'].astype(str), errors='coerce')
+        
+        # ลบแถวที่วันที่ Error หรือเป็นค่าว่างทิ้งไป (กันระบบรวน)
+        df = df.dropna(subset=['Start_Time', 'End_Time'])
+        
+        # ตัดช่องว่างข้างหน้า-ข้างหลังชื่อรถทิ้ง (Trim) เพื่อให้เปรียบเทียบชื่อรถได้แม่นยำ 100%
+        df['Car'] = df['Car'].astype(str).str.strip()
+
 except Exception as e:
-    st.error(f"Connect Error: {e}")
+    st.error(f"เกิดข้อผิดพลาดในการดึงข้อมูล: {e}")
     st.stop()
+
+def is_car_available(df, car, start, end, excl_index=None):
+    if df.empty: return True, "ว่าง"
+    
+    # Clean ชื่อรถที่รับเข้ามา ให้แน่ใจว่าไม่มีช่องว่างเกิน
+    target_car = car.strip()
+    
+    # กรองเฉพาะรายการของรถคันนั้น
+    car_bookings = df[df['Car'] == target_car]
+    
+    for index, row in car_bookings.iterrows():
+        # ข้ามรายการตัวเอง (กรณีแก้ไข)
+        if excl_index is not None and index == excl_index:
+            continue
+            
+        # LOGIC การเช็คชนกัน (Overlap Logic)
+        # ถ้ารายการเดิม เริ่ม 13:00 จบ 15:00
+        # เราจองใหม่ 14:00 - 16:00
+        # 14:00 < 15:00 (จริง) AND 16:00 > 13:00 (จริง) => ชนกัน!
+        if start < row['End_Time'] and end > row['Start_Time']:
+            
+            # Format เวลาให้ดูง่าย
+            existing_start = row['Start_Time'].strftime('%d/%m %H:%M')
+            existing_end = row['End_Time'].strftime('%H:%M')
+            
+            return False, f"❌ ไม่ว่าง! ติดจองโดย {row['User']} ({existing_start} - {existing_end})"
+            
+    return True, "✅ ว่าง"
 
 def save_to_gsheet(dataframe):
     export_df = dataframe.copy()
