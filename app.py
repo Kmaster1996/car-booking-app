@@ -4,28 +4,13 @@ from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- 1. CONFIGURATION: ตั้งค่าสเปครถและอุปกรณ์ตรงนี้ ---
-
-# รายชื่อรถ พร้อมสเปค (Max Seats = จำนวนคนนั่งสูงสุด, Cargo Score = คะแนนความจุของ)
+# --- 1. CONFIGURATION ---
 CAR_SPECS = {
-    "Honda Jazz 2019": {
-        "max_seats": 5, 
-        "cargo_score": 400, # Jazz ที่เก็บของท้ายรถประมาณหนึ่ง
-        "desc": "รถเก๋ง 5 ประตู คล่องตัว"
-    },
-    "Isuzu Mu-X": {
-        "max_seats": 7, 
-        "cargo_score": 1000, # พับเบาะได้ พื้นที่เยอะ
-        "desc": "SUV 7 ที่นั่ง หรือพับเบาะขนของสำคัญ"
-    },
-    "Isuzu D-max 4 Doors": {
-        "max_seats": 5, 
-        "cargo_score": 2500, # กระบะหลัง ขนของชิ้นใหญ่ได้สบาย
-        "desc": "กระบะ 4 ประตู เน้นขนเครื่องมือหนัก/เปื้อนได้"
-    }
+    "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 400, "desc": "รถเก๋ง 5 ประตู คล่องตัว"},
+    "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1000, "desc": "SUV 7 ที่นั่ง/พับเบาะขนของ"},
+    "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2500, "desc": "กระบะ 4 ประตู ขนของหนัก"}
 }
 
-# รายชื่ออุปกรณ์ (Volume = คะแนนความกินพื้นที่ต่อชิ้น)
 EQUIPMENT_DB = {
     "GNSS": {"volume": 150},
     "Tripod": {"volume": 120},
@@ -36,54 +21,38 @@ EQUIPMENT_DB = {
     "Apache4": {"volume": 500},
     "LiDAR": {"volume": 100},
     "RS10": {"volume": 150},
-    "D270": {"volume": 200},
+    "D270": {"volume": 200}
 }
 
-# --- 2. Google Sheets Connection ---
+# --- 2. Google Sheets ---
 def get_google_sheet():
-    # *ใช้ Code เดิมจาก Version ก่อนหน้า*
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     return client.open("CarBookingDB").sheet1 
 
-# --- 3. LOGIC: ระบบคำนวณความเหมาะสม ---
+# --- 3. LOGIC ---
 def recommend_cars(n_people, selected_equipment):
-    # 1. คำนวณ Load รวมของอุปกรณ์
     total_equipment_load = 0
     equip_summary = []
-    
     for item, qty in selected_equipment.items():
         if qty > 0:
             vol = EQUIPMENT_DB[item]["volume"] * qty
             total_equipment_load += vol
             equip_summary.append(f"{item} x{qty}")
-    
     equip_str = ", ".join(equip_summary) if equip_summary else "-"
     
-    # 2. หาว่ารถคันไหนไปได้บ้าง
     recommendations = []
-    
     for car_name, specs in CAR_SPECS.items():
-        # กฏที่ 1: ที่นั่งต้องพอ
         if specs["max_seats"] >= n_people:
-            # กฏที่ 2: ที่เหลือจากการนั่ง ต้องพอกับของ
-            # สมมติคน 1 คนกินที่ Load Factor เล็กน้อยในห้องโดยสาร แต่หลักๆ ดู Cargo Score
-            # ถ้าเป็นกระบะ (D-max) คนนั่งเต็ม ก็ยังขนของข้างหลังได้เต็มที่
-            # ถ้าเป็น Jazz คนนั่งเต็ม ที่เก็บของจะเหลือน้อย
-            
             is_fit = False
             note = ""
-            
             if "D-max" in car_name:
-                # กระบะ แยกส่วนคนกับของ ชิลๆ
                 if total_equipment_load <= specs["cargo_score"]:
                     is_fit = True
                     note = "✅ เหมาะสม (ใส่กระบะหลัง)"
             else:
-                # รถเก๋ง/SUV พื้นที่แปรผกผันกับคน
-                # สมมติคน 1 คน กินพื้นที่ Cargo ไปนิดหน่อย (กระเป๋าเป้)
                 available_cargo = specs["cargo_score"] - (n_people * 20) 
                 if total_equipment_load <= available_cargo:
                     is_fit = True
@@ -93,17 +62,38 @@ def recommend_cars(n_people, selected_equipment):
             
             if is_fit:
                 recommendations.append((car_name, note))
-        else:
-            # ไม่แนะนำเพราะที่นั่งไม่พอ
-            pass
             
     return recommendations, equip_str
 
-# --- UI Application ---
-st.set_page_config(page_title="ระบบจองรถบริษัท (Smart)", layout="wide")
-st.title("🚛 ระบบจองรถบริษัท + คำนวณการขนของ")
+# ฟังก์ชันเช็คว่าว่างไหม (Excl_index เอาไว้ข้ามรายการตัวเองตอนแก้ไข)
+def is_car_available(df, car, start, end, excl_index=None):
+    if df.empty: return True, "ว่าง"
+    
+    # กรองรายการของรถคันนั้น
+    car_bookings = df[df['Car'] == car]
+    
+    for index, row in car_bookings.iterrows():
+        # ถ้าเป็นรายการเดียวกับที่เรากำลังแก้ ให้ข้ามไปเลย (ไม่นับว่าทับซ้อน)
+        if excl_index is not None and index == excl_index:
+            continue
+            
+        if start < row['End_Time'] and end > row['Start_Time']:
+            return False, f"ชนกับ {row['User']} ({row['Start_Time'].strftime('%H:%M')}-{row['End_Time'].strftime('%H:%M')})"
+    return True, "ว่าง"
 
-# เชื่อมต่อ Database
+# --- UI Setup ---
+st.set_page_config(page_title="ระบบจองรถบริษัท (Smart V3)", layout="wide")
+st.title("🚛 ระบบจองรถบริษัท")
+
+# Initialize Default Time (แก้ปัญหาเวลาเด้ง)
+if 'default_time_start' not in st.session_state:
+    now = datetime.now()
+    # ปัดเศษเวลาให้สวยงาม (เช่น 14:00) และบวกไปข้างหน้าเล็กน้อย
+    next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0)
+    st.session_state.default_time_start = next_hour.time()
+    st.session_state.default_time_end = (next_hour + timedelta(hours=4)).time()
+
+# Load Data
 try:
     sheet = get_google_sheet()
     data = sheet.get_all_records()
@@ -124,70 +114,48 @@ def save_to_gsheet(dataframe):
     sheet.clear()
     sheet.update([export_df.columns.values.tolist()] + export_df.values.tolist())
 
-def is_car_available(df, car, start, end):
-    if df.empty: return True, "ว่าง"
-    car_bookings = df[df['Car'] == car]
-    for _, row in car_bookings.iterrows():
-        if start < row['End_Time'] and end > row['Start_Time']:
-            return False, f"ติดจองโดย {row['User']}"
-    return True, "ว่าง"
-
 # --- TABS ---
-tab1, tab2, tab3 = st.tabs(["📦 คำนวณและจองรถ", "📋 ตารางการใช้รถ", "❌ ยกเลิก"])
+tab1, tab2, tab3 = st.tabs(["📦 จองรถใหม่", "📋 ตารางรถ", "✏️ แก้ไข/ยกเลิก"])
 
+# --- TAB 1: จองใหม่ ---
 with tab1:
     col1, col2 = st.columns([1, 1])
-    
     with col1:
-        st.header("1. ระบุคนและสิ่งของ")
+        st.header("1. ข้อมูลการเดินทาง")
         user_name = st.text_input("ชื่อผู้จอง")
         task_name = st.text_input("ภารกิจ")
-        location = st.text_input("สถานที่ไป")
+        location = st.text_input("สถานที่")
+        n_people = st.number_input("จำนวนคน", 1, 10, 2)
         
-        n_people = st.number_input("จำนวนคนเดินทาง (รวมคนขับ)", min_value=1, max_value=10, value=2)
-        
-        st.subheader("เลือกอุปกรณ์ที่ขนไป")
+        st.caption("เลือกอุปกรณ์")
         selected_equip = {}
-        # วนลูปสร้างตัวเลือกจำนวน
         for item in EQUIPMENT_DB.keys():
-            c1, c2 = st.columns([3, 1])
-            c1.write(f"• {item}")
-            qty = c2.number_input(f"จำนวน", key=item, min_value=0, max_value=10, value=0, label_visibility="collapsed")
-            if qty > 0:
-                selected_equip[item] = qty
+            c_eq1, c_eq2 = st.columns([3, 1])
+            c_eq1.write(f"- {item}")
+            qty = c_eq2.number_input("จำนวน", key=f"add_{item}", min_value=0, max_value=10, value=0, label_visibility="collapsed")
+            if qty > 0: selected_equip[item] = qty
 
     with col2:
-        st.header("2. ระบบแนะนำรถ")
-        
-        # คำนวณรถที่เหมาะสม
+        st.header("2. เลือกเวลาและรถ")
         valid_cars_list, equip_str = recommend_cars(n_people, selected_equip)
         
-        if not valid_cars_list:
-            st.error("⚠️ ไม่มีรถที่เหมาะสม! (คนเยอะเกิน หรือ ของเยอะเกินความจุรถ)")
-            available_choices = [] # ไม่มีให้เลือก
-        else:
-            st.success(f"พบรถที่เหมาะสม {len(valid_cars_list)} คัน")
-            # แปลง List เป็นตัวเลือกใน Selectbox
+        # แสดงผลแนะนำ
+        if valid_cars_list:
+            st.success(f"แนะนำ: {', '.join([c[0] for c in valid_cars_list])}")
             car_choices = [c[0] for c in valid_cars_list]
-            available_choices = car_choices
-            
-            # แสดงรายละเอียดการแนะนำ
-            for car_name, note in valid_cars_list:
-                st.info(f"**{car_name}**: {note}")
-
-        st.divider()
-        st.header("3. ยืนยันวันเวลา")
+        else:
+            st.warning("ไม่มีรถที่เหมาะสมตามเกณฑ์ (แต่คุณยังเลือกเองได้)")
+            car_choices = list(CAR_SPECS.keys())
         
-        # ให้เลือกเฉพาะรถที่ระบบแนะนำ (แต่ถ้าไม่มี ก็ยอมให้เลือกทั้งหมดเผื่อเขาจะฝืน)
-        final_car_list = available_choices if available_choices else list(CAR_SPECS.keys())
-        selected_car = st.selectbox("เลือกรถที่ต้องการจอง", final_car_list)
+        selected_car = st.selectbox("เลือกรถ", car_choices if car_choices else list(CAR_SPECS.keys()))
         
+        # วันเวลา (ใช้ session_state เพื่อไม่ให้เด้ง)
         today = datetime.now()
         c_date, c_time = st.columns(2)
         start_date = c_date.date_input("วันที่เริ่ม", today)
-        start_time = c_time.time_input("เวลาเริ่ม", today.time())
+        start_time = c_time.time_input("เวลาเริ่ม", st.session_state.default_time_start)
         end_date = c_date.date_input("วันที่คืน", today)
-        end_time = c_time.time_input("เวลาคืน", (today + timedelta(hours=4)).time())
+        end_time = c_time.time_input("เวลาคืน", st.session_state.default_time_end)
 
         if st.button("🚀 ยืนยันการจอง", use_container_width=True):
             start_dt = datetime.combine(start_date, start_time)
@@ -196,68 +164,109 @@ with tab1:
             if start_dt >= end_dt:
                 st.warning("เวลาคืนต้องหลังเวลาเริ่ม")
             elif not user_name:
-                st.warning("กรุณาระบุชื่อผู้จอง")
+                st.warning("กรุณาระบุชื่อ")
             else:
                 available, msg = is_car_available(df, selected_car, start_dt, end_dt)
                 if available:
                     new_row = {
                         "User": user_name, "Task": task_name, "Car": selected_car,
-                        "People": n_people, "Equipment": equip_str, # บันทึกรายการของ
+                        "People": n_people, "Equipment": equip_str,
                         "Location": location, "Start_Time": start_dt, "End_Time": end_dt
                     }
                     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                     save_to_gsheet(df)
-                    st.success(f"จอง {selected_car} สำเร็จ!")
-                    st.balloons()
-                    st.experimental_rerun()
+                    st.success("จองสำเร็จ!")
+                    st.rerun()
                 else:
                     st.error(f"จองไม่ได้: {msg}")
 
+# --- TAB 2: ตาราง (เหมือนเดิม) ---
 with tab2:
-    st.subheader("สถานะการใช้งานรถ")
+    st.write("### สถานะรถตอนนี้")
     now = datetime.now()
-    
-    # Grid Layout แสดงรถ
     cols = st.columns(3)
-    cars_all = list(CAR_SPECS.keys())
-    
-    for i, car in enumerate(cars_all):
+    for i, car in enumerate(CAR_SPECS.keys()):
         usage = df[df['Car'] == car] if not df.empty else pd.DataFrame()
         with cols[i]:
-            # Card Styling
-            st.write(f"### 🚗 {car}")
-            st.caption(CAR_SPECS[car]['desc'])
-            
             is_busy = False
             if not usage.empty:
                 current = usage[(usage['Start_Time'] <= now) & (usage['End_Time'] >= now)]
                 if not current.empty:
                     is_busy = True
                     row = current.iloc[0]
-                    st.error(f"⛔ กำลังใช้งาน")
-                    st.write(f"**โดย:** {row['User']}")
-                    st.write(f"**ไป:** {row['Location']}")
-                    st.write(f"**ขน:** {row['Equipment']}")
-            
+                    st.error(f"⛔ {car}")
+                    st.caption(f"โดย: {row['User']} (ถึง {row['End_Time'].strftime('%H:%M')})")
             if not is_busy:
-                st.success("✅ ว่าง")
+                st.success(f"✅ {car}")
 
     st.divider()
-    st.write("### ประวัติการจองทั้งหมด")
     if not df.empty:
         show_df = df.sort_values("Start_Time", ascending=False).copy()
+        # Format for display
         show_df['Start_Time'] = show_df['Start_Time'].dt.strftime('%d/%m %H:%M')
         show_df['End_Time'] = show_df['End_Time'].dt.strftime('%d/%m %H:%M')
-        # เลือกแสดงเฉพาะคอลัมน์ที่จำเป็น
-        st.dataframe(show_df[['User', 'Car', 'People', 'Equipment', 'Location', 'Start_Time', 'End_Time']], use_container_width=True)
+        st.dataframe(show_df[['User','Car','People','Equipment','Start_Time','End_Time']], use_container_width=True)
 
+# --- TAB 3: แก้ไข/ยกเลิก (เพิ่มใหม่) ---
 with tab3:
-    st.write("### ยกเลิกรายการจอง")
+    st.header("จัดการรายการจอง")
     if not df.empty:
-        df['Display'] = df.apply(lambda x: f"{x['User']} - {x['Car']} ({x['Start_Time'].strftime('%d/%m')})", axis=1)
-        del_item = st.selectbox("เลือกรายการที่จะยกเลิก", df['Display'].unique())
-        if st.button("ยืนยันการลบ"):
-            df = df[df['Display'] != del_item].drop(columns=['Display'])
-            save_to_gsheet(df)
-            st.success("ลบรายการเรียบร้อย")
-            st.experimental_rerun()
+        # สร้าง Dropdown เลือกรายการ
+        df['Display'] = df.apply(lambda x: f"{x['User']} - {x['Car']} ({x['Start_Time'].strftime('%d/%m %H:%M')})", axis=1)
+        # ใช้ session state เพื่อจำว่าเลือกอะไรอยู่
+        selected_item_str = st.selectbox("เลือกรายการที่จะแก้ไข/ลบ", df['Display'].unique())
+        
+        # ดึงข้อมูล Row ที่เลือกออกมา
+        selected_row_idx = df[df['Display'] == selected_item_str].index[0]
+        row_data = df.loc[selected_row_idx]
+        
+        st.info(f"กำลังจัดการ: {selected_item_str}")
+        
+        mode = st.radio("เลือกสิ่งที่ต้องการทำ", ["❌ ลบรายการนี้", "✏️ แก้ไขเวลา"], horizontal=True)
+        
+        if mode == "❌ ลบรายการนี้":
+            if st.button("ยืนยันการลบ", type="primary"):
+                df = df.drop(selected_row_idx)
+                # ลบคอลัมน์ Display ก่อนเซฟ
+                if 'Display' in df.columns: df = df.drop(columns=['Display'])
+                save_to_gsheet(df)
+                st.success("ลบเรียบร้อย")
+                st.rerun()
+                
+        elif mode == "✏️ แก้ไขเวลา":
+            st.write("--- แก้ไขวัน/เวลา ---")
+            # ดึงค่าเดิมมาเป็นค่าตั้งต้น
+            curr_start = row_data['Start_Time']
+            curr_end = row_data['End_Time']
+            
+            # Form แก้ไข
+            c_edit1, c_edit2 = st.columns(2)
+            new_s_date = c_edit1.date_input("วันที่เริ่ม (ใหม่)", curr_start.date())
+            new_s_time = c_edit2.time_input("เวลาเริ่ม (ใหม่)", curr_start.time())
+            new_e_date = c_edit1.date_input("วันที่คืน (ใหม่)", curr_end.date())
+            new_e_time = c_edit2.time_input("เวลาคืน (ใหม่)", curr_end.time())
+            
+            if st.button("บันทึกการแก้ไข"):
+                new_start_dt = datetime.combine(new_s_date, new_s_time)
+                new_end_dt = datetime.combine(new_e_date, new_e_time)
+                
+                if new_start_dt >= new_end_dt:
+                    st.error("เวลาคืนต้องหลังเวลาเริ่ม")
+                else:
+                    # เช็คว่าว่างไหม (ส่ง selected_row_idx ไปบอกว่าอย่าเช็คชนกับตัวเองนะ)
+                    available, msg = is_car_available(df, row_data['Car'], new_start_dt, new_end_dt, excl_index=selected_row_idx)
+                    
+                    if available:
+                        # อัปเดตข้อมูลใน DataFrame
+                        df.at[selected_row_idx, 'Start_Time'] = new_start_dt
+                        df.at[selected_row_idx, 'End_Time'] = new_end_dt
+                        if 'Display' in df.columns: df = df.drop(columns=['Display'])
+                        
+                        save_to_gsheet(df)
+                        st.success("แก้ไขเวลาเรียบร้อย!")
+                        st.rerun()
+                    else:
+                        st.error(f"เปลี่ยนไม่ได้: {msg}")
+
+    else:
+        st.info("ไม่มีรายการจอง")
