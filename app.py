@@ -6,8 +6,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 1. CONFIGURATION ---
 CAR_SPECS = {
-    "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 400, "desc": "รถเก๋ง 5 ประตู คล่องตัว"},
-    "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1000, "desc": "SUV 7 ที่นั่ง/พับเบาะขนของ"},
+    "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 800, "desc": "รถเก๋ง 5 ประตู คล่องตัว"},
+    "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "desc": "SUV 7 ที่นั่ง/พับเบาะขนของ"},
     "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2500, "desc": "กระบะ 4 ประตู ขนของหนัก"}
 }
 
@@ -83,7 +83,7 @@ def is_car_available(df, car, start, end, excl_index=None):
 
 # --- UI Setup ---
 st.set_page_config(page_title="ระบบจองรถบริษัท (Smart V3)", layout="wide")
-st.title("🚛 ระบบจองรถบริษัท")
+st.title("🚛 Navtech4Book")
 
 # Initialize Default Time (แก้ปัญหาเวลาเด้ง)
 if 'default_time_start' not in st.session_state:
