@@ -83,7 +83,7 @@ def is_car_available(df, car, start, end, excl_index=None):
 
 # --- UI Setup ---
 st.set_page_config(page_title="ระบบจองรถบริษัท (Smart V3)", layout="wide")
-st.title("🚛 Navtech4Book")
+st.title("🚛 NAVTECH4BOOK")
 
 # Initialize Default Time (แก้ปัญหาเวลาเด้ง)
 if 'default_time_start' not in st.session_state:
