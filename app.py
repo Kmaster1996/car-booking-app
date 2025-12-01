@@ -278,7 +278,47 @@ def page_car_booking(df_book, df_stock, df_users, sh):
 # --- PAGE: ADMIN & INVENTORY ---
 def page_admin(df_book, df_stock, df_users, sh):
     st.title("🛠️ Admin Dashboard")
+    now = get_thai_time()
     
+    # ---------------------------------------------------------
+    # 1. MONITOR SECTION (เพิ่มใหม่ตามที่ขอ)
+    # ---------------------------------------------------------
+    st.write("### 🕵️‍♂️ Monitor: ใครใช้อุปกรณ์อยู่บ้างขณะนี้?")
+    st.caption(f"ข้อมูล ณ เวลา: {now.strftime('%d/%m/%Y %H:%M')}")
+
+    # หาลูกหนี้ (Active Bookings)
+    active_bookings = pd.DataFrame()
+    if not df_book.empty:
+        active_bookings = df_book[
+            (df_book['Start_Time'] <= now) & 
+            (df_book['End_Time'] >= now)
+        ]
+
+    # แสดงผล
+    found_borrower = False
+    if not active_bookings.empty:
+        for _, row in active_bookings.iterrows():
+            # โชว์เฉพาะคนที่มีการยืมของ (Equipment ไม่ใช่ขีด หรือ ว่าง)
+            equip_list = str(row['Equipment'])
+            if equip_list not in ["-", "", "nan", "{}"]:
+                found_borrower = True
+                # สร้าง Card แสดงรายละเอียด
+                with st.container():
+                    st.info(
+                        f"👤 **{row['User']}** (ภารกิจ: {row['Task']})\n\n"
+                        f"🚗 **พาหนะ:** {row['Car']}\n\n"
+                        f"📦 **กำลังใช้งาน:** {equip_list}\n\n"
+                        f"🕒 **กำหนดคืน:** {row['End_Time'].strftime('%H:%M')} (เหลือเวลาอีก {(row['End_Time'] - now).seconds // 3600} ชม. {(row['End_Time'] - now).seconds // 60 % 60} นาที)"
+                    )
+    
+    if not found_borrower:
+        st.success("✅ ขณะนี้ไม่มีใครเบิกอุปกรณ์ออกไป (ของอยู่ครบ)")
+
+    st.divider()
+
+    # ---------------------------------------------------------
+    # 2. USER MANAGEMENT
+    # ---------------------------------------------------------
     st.write("### 👥 จัดการรายชื่อพนักงาน")
     with st.expander("แก้ไขรายชื่อ (Dropdown)"):
         edited_users = st.data_editor(df_users, num_rows="dynamic", use_container_width=True)
@@ -288,18 +328,29 @@ def page_admin(df_book, df_stock, df_users, sh):
             st.rerun()
 
     st.divider()
-    st.write("### 📊 คลังเครื่องมือ (Stock)")
-    status_df = get_stock_status(df_book, df_stock, get_thai_time())
+
+    # ---------------------------------------------------------
+    # 3. STOCK MANAGEMENT
+    # ---------------------------------------------------------
+    st.write("### 📊 คลังเครื่องมือ (Stock Overview)")
+    
+    # Dashboard Card
+    status_df = get_stock_status(df_book, df_stock, now)
     if not status_df.empty:
         status_df = status_df.sort_values(by="Available")
         cols = st.columns(4)
         idx = 0
         for item_name, row in status_df.iterrows():
             with cols[idx % 4]:
-                st.metric(label=item_name, value=f"{int(row['Available'])} / {int(row['Total'])}", delta=f"-{int(row['Used'])} ใช้" if row['Used']>0 else "ว่าง")
+                st.metric(
+                    label=item_name, 
+                    value=f"{int(row['Available'])} / {int(row['Total'])}", 
+                    delta=f"-{int(row['Used'])} ใช้อยู่" if row['Used']>0 else "ครบ"
+                )
             idx+=1
             
-    with st.expander("แก้ไขจำนวน Stock"):
+    # Edit Table
+    with st.expander("แก้ไขจำนวน / เพิ่มของใหม่"):
         edited_stock = st.data_editor(df_stock, num_rows="dynamic", use_container_width=True)
         if st.button("บันทึก Stock"):
             save_stock(sh, edited_stock)
