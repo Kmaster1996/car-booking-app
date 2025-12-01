@@ -246,7 +246,7 @@ def page_car_booking(df_book, df_stock, sh):
 
 # --- PAGE: INVENTORY MANAGEMENT ---
 def page_inventory(df_book, df_stock, sh):
-    st.title("🛠️ NavGo: คลังเครื่องมือ (Inventory)")
+    st.title("🛠️NAVTECH4BOOK")
     
     st.write("### 📊 สถานะสต็อกปัจจุบัน (Real-time)")
     
