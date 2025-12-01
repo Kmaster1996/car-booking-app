@@ -8,6 +8,11 @@ import time
 # --- CONFIG & SETUP ---
 st.set_page_config(page_title="NavGo System", layout="wide", initial_sidebar_state="expanded")
 
+# --- TIMEZONE FIX: ฟังก์ชันดึงเวลาไทย ---
+def get_thai_time():
+    # ดึงเวลา UTC แล้วบวก 7 ชั่วโมง
+    return datetime.utcnow() + timedelta(hours=7)
+
 # Connect Google Sheets
 def get_client():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -16,7 +21,7 @@ def get_client():
     client = gspread.authorize(creds)
     return client
 
-# Load Data Functions (Refined)
+# Load Data Functions
 def load_data():
     client = get_client()
     sh = client.open("CarBookingDB")
@@ -29,13 +34,11 @@ def load_data():
         if df_book.empty:
             df_book = pd.DataFrame(columns=["User", "Task", "Car", "People", "Equipment", "Location", "Start_Time", "End_Time"])
         else:
-            # Clean Data & Date Parsing (Strict)
+            # Clean Data
             df_book['Start_Time'] = pd.to_datetime(df_book['Start_Time'].astype(str), errors='coerce')
             df_book['End_Time'] = pd.to_datetime(df_book['End_Time'].astype(str), errors='coerce')
             df_book = df_book.dropna(subset=['Start_Time', 'End_Time'])
-            # Clean Car Name
             df_book['Car'] = df_book['Car'].astype(str).str.strip()
-            # Clean Equipment String
             df_book['Equipment'] = df_book['Equipment'].astype(str)
     except:
         df_book = pd.DataFrame(columns=["User", "Task", "Car", "People", "Equipment", "Location", "Start_Time", "End_Time"])
@@ -70,7 +73,6 @@ def save_stock(sh, df):
 
 # --- LOGIC HELPERS ---
 def parse_equip_str(equip_str):
-    """แปลง string 'Item A x2, Item B x1' เป็น dict {'Item A': 2, ...}"""
     if not equip_str or equip_str == "-" or equip_str == "nan": return {}
     items = {}
     parts = equip_str.split(',')
@@ -85,27 +87,22 @@ def parse_equip_str(equip_str):
     return items
 
 def get_stock_status(df_book, df_stock, query_time=None):
-    if query_time is None: query_time = datetime.now()
+    if query_time is None: query_time = get_thai_time() # ใช้เวลาไทย
     
-    # Setup stock dict
     stock_status = {}
     for _, row in df_stock.iterrows():
         stock_status[row['ItemName']] = {
             "Total": int(row['TotalQty']), "Used": 0, "Available": 0
         }
     
-    # Calculate Usage
     if not df_book.empty:
-        # Find active bookings at query_time
         active_bookings = df_book[(df_book['Start_Time'] <= query_time) & (df_book['End_Time'] >= query_time)]
-        
         for _, row in active_bookings.iterrows():
             used_items = parse_equip_str(row['Equipment'])
             for item, qty in used_items.items():
                 if item in stock_status:
                     stock_status[item]['Used'] += qty
     
-    # Calculate Available
     for item in stock_status:
         stock_status[item]['Available'] = stock_status[item]['Total'] - stock_status[item]['Used']
         
@@ -114,10 +111,11 @@ def get_stock_status(df_book, df_stock, query_time=None):
 # --- PAGE: CAR BOOKING ---
 def page_car_booking(df_book, df_stock, sh):
     st.title("🚗 NavGo: จองรถและอุปกรณ์")
+    st.caption(f"เวลาปัจจุบัน (Thai Time): {get_thai_time().strftime('%d/%m/%Y %H:%M')}")
     
-    # Initialize Time (Prevent Reset)
+    # Initialize Time (Using Thai Time)
     if 'booking_s_time' not in st.session_state:
-        now = datetime.now()
+        now = get_thai_time() # ใช้เวลาไทย
         next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0)
         st.session_state.booking_s_time = next_hour.time()
         st.session_state.booking_e_time = (next_hour + timedelta(hours=4)).time()
@@ -133,7 +131,7 @@ def page_car_booking(df_book, df_stock, sh):
     tab1, tab2 = st.tabs(["📦 จองใหม่", "📋 ตารางรถ"])
 
     with tab1:
-        # --- Pre-Calculation (Real-time Stock & Car) ---
+        # Pre-Calculation
         curr_s_date = st.session_state.booking_s_date
         curr_s_time = st.session_state.booking_s_time
         curr_e_date = st.session_state.booking_e_date
@@ -142,13 +140,10 @@ def page_car_booking(df_book, df_stock, sh):
         check_start_dt = datetime.combine(curr_s_date, curr_s_time)
         check_end_dt = datetime.combine(curr_e_date, curr_e_time)
 
-        # หา Booking ที่ทับซ้อนช่วงเวลานี้
         overlap_bookings_now = df_book[
             (df_book['Start_Time'] < check_end_dt) & 
             (df_book['End_Time'] > check_start_dt)
         ]
-
-        # หารถที่ไม่ว่าง (Busy Cars)
         busy_cars_set = set(overlap_bookings_now['Car'].str.strip().unique())
 
         c1, c2 = st.columns([1, 1])
@@ -169,8 +164,6 @@ def page_car_booking(df_book, df_stock, sh):
                 for _, row in df_stock.iterrows():
                     item_name = row['ItemName']
                     total = int(row['TotalQty'])
-                    
-                    # นับยอดที่ถูกใช้ไปในช่วงเวลาที่เลือก
                     used_count = 0
                     for _, b_row in overlap_bookings_now.iterrows():
                         b_items = parse_equip_str(b_row['Equipment'])
@@ -180,7 +173,6 @@ def page_car_booking(df_book, df_stock, sh):
                     if available < 0: available = 0
 
                     cc1, cc2 = st.columns([3, 1])
-                    
                     if available == 0:
                         cc1.markdown(f"🔴 **{item_name}** (หมด!)")
                         max_val = 0
@@ -206,49 +198,36 @@ def page_car_booking(df_book, df_stock, sh):
             e_date = d2.date_input("คืน", key='booking_e_date')
             e_time = t2.time_input("เวลาคืน", key='booking_e_time')
             
-            # --- Car Recommendation Logic ---
             valid_cars = []
             total_load = 0
             equip_str_list = []
-            
-            # Calculate Load
             for k, v in selected_equip.items():
                 try:
                     vol = df_stock[df_stock['ItemName'] == k]['VolumeScore'].values[0]
                     total_load += (vol * v)
                     equip_str_list.append(f"{k} x{v}")
-                except:
-                    pass
+                except: pass
             equip_final_str = ", ".join(equip_str_list) if equip_str_list else "-"
 
-            # Filter Cars
             st.divider()
             st.subheader("3. เลือกรถ")
             
             for c_name, specs in CAR_SPECS.items():
-                # Filter 1: คนนั่งพอไหม
                 if specs['max_seats'] >= ppl:
-                    # Filter 2: ขนของไหวไหม
                     cargo_limit = specs['cargo_score'] if "D-max" in c_name else (specs['cargo_score'] - (ppl*20))
                     if total_load <= cargo_limit:
-                        # Filter 3: *** รถว่างไหม ***
                         if c_name not in busy_cars_set:
                             valid_cars.append(c_name)
 
             if not valid_cars:
-                st.warning("⚠️ ไม่มีรถว่าง หรือ รถรับคน/ของ ไม่ไหว")
-                if busy_cars_set:
-                    st.error(f"รถที่ติดจองช่วงนี้: {', '.join(busy_cars_set)}")
+                st.warning("⚠️ ไม่มีรถว่าง หรือ รถรับไม่ไหว")
             else:
                 st.success(f"✅ รถพร้อมใช้งาน: {len(valid_cars)} คัน")
             
-            # Show dropdown only if cars available
             sel_car = st.selectbox("เลือกรถ", valid_cars if valid_cars else ["ไม่มีรถว่าง"])
 
-            # Button
             btn_disabled = (not valid_cars) or (sel_car == "ไม่มีรถว่าง")
             if st.button("🚀 ยืนยันการจอง", type="primary", disabled=btn_disabled):
-                # Double Check (กันคนแย่งกดพร้อมกัน)
                 final_overlap = df_book[
                     (df_book['Start_Time'] < check_end_dt) & 
                     (df_book['End_Time'] > check_start_dt) &
@@ -270,12 +249,9 @@ def page_car_booking(df_book, df_stock, sh):
                     df_book = pd.concat([df_book, pd.DataFrame([new_row])], ignore_index=True)
                     save_booking(sh, df_book)
                     st.success("บันทึกสำเร็จ!")
-                    
-                    # Clear Time Session
                     for key in ['booking_s_time', 'booking_e_time', 'booking_s_date', 'booking_e_date']:
                         del st.session_state[key]
-                    
-                    time.sleep(1) # รอ Sheet อัปเดตแป๊บนึง
+                    time.sleep(1)
                     st.rerun()
 
     with tab2:
@@ -289,15 +265,13 @@ def page_car_booking(df_book, df_stock, sh):
 # --- PAGE: INVENTORY ---
 def page_inventory(df_book, df_stock, sh):
     st.title("🛠️ NavGo: คลังเครื่องมือ")
-    st.write("### 📊 สถานะสต็อก (Real-time ณ ปัจจุบัน)")
+    st.caption(f"ข้อมูล ณ เวลา: {get_thai_time().strftime('%d/%m/%Y %H:%M')}")
     
-    # Calculate stock based on NOW
-    status_df = get_stock_status(df_book, df_stock, datetime.now())
+    # Use Thai Time for query
+    status_df = get_stock_status(df_book, df_stock, get_thai_time())
     
     if not status_df.empty:
-        # Sort by available (เอาของใกล้หมดขึ้นก่อน)
         status_df = status_df.sort_values(by="Available")
-        
         cols = st.columns(4)
         idx = 0
         for item_name, row in status_df.iterrows():
@@ -311,7 +285,7 @@ def page_inventory(df_book, df_stock, sh):
             
     st.divider()
     st.write("### 🕵️ ใครใช้อุปกรณ์อยู่บ้าง?")
-    now = datetime.now()
+    now = get_thai_time() # Use Thai Time
     active = df_book[(df_book['Start_Time'] <= now) & (df_book['End_Time'] >= now)]
     
     if not active.empty:
@@ -332,12 +306,11 @@ def page_inventory(df_book, df_stock, sh):
 # --- MAIN APP ---
 try:
     df_book, df_stock, sh = load_data()
-    
     with st.sidebar:
         st.header("NavGo Menu")
         page = st.radio("ไปที่หน้า:", ["🚗 จองรถ & อุปกรณ์", "🛠️ คลังเครื่องมือ"])
         st.write("---")
-        st.caption("Navtech System V4.0")
+        st.write(f"🕒 {get_thai_time().strftime('%H:%M:%S')}") # นาฬิกาไทยมุมซ้ายล่าง
 
     if page == "🚗 จองรถ & อุปกรณ์":
         page_car_booking(df_book, df_stock, sh)
