@@ -111,8 +111,8 @@ def page_car_booking(df_book, df_stock, sh):
         st.session_state.booking_e_date = now.date()
 
     CAR_SPECS = {
-        "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 400},
-        "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1000},
+        "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 1500},
+        "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 2000},
         "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2500}
     }
 
