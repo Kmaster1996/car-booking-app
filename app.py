@@ -19,22 +19,40 @@ def get_client():
     client = gspread.authorize(creds)
     return client
 
-# --- TELEGRAM NOTIFY FUNCTION (NEW) ---
+# --- TELEGRAM NOTIFY FUNCTION (DEBUG MODE) ---
 def send_telegram_notify(msg):
     try:
+        # 1. เช็คว่าใส่ Secret ครบไหม
+        if "telegram_token" not in st.secrets:
+            st.error("❌ ไม่พบ 'telegram_token' ใน Secrets! กรุณาตรวจสอบการสะกด")
+            return None
+        if "telegram_chat_id" not in st.secrets:
+            st.error("❌ ไม่พบ 'telegram_chat_id' ใน Secrets! กรุณาตรวจสอบการสะกด")
+            return None
+
         token = st.secrets["telegram_token"]
         chat_id = st.secrets["telegram_chat_id"]
         
+        # 2. ลองยิงข้อความ
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {
             'chat_id': chat_id,
             'text': msg,
-            'parse_mode': 'HTML' # จัดรูปแบบตัวหนา ตัวเอียงได้
+            'parse_mode': 'HTML'
         }
         r = requests.post(url, data=payload)
-        return r.status_code
+        
+        # 3. เช็คผลลัพธ์จาก Telegram
+        if r.status_code == 200:
+            # ถ้าสำเร็จ ไม่ต้องโชว์อะไร (หรืออยากโชว์ก็ได้)
+            return r.status_code
+        else:
+            # ถ้าพัง ให้โชว์ Error Code จาก Telegram ออกมาดูเลย
+            st.error(f"❌ แจ้งเตือนไม่ไป! Telegram ตอบกลับว่า: {r.text}")
+            return r.status_code
+            
     except Exception as e:
-        print(f"Telegram Notify Error: {e}")
+        st.error(f"❌ เกิดข้อผิดพลาดในระบบ: {e}")
         return None
 
 # --- LOAD DATA ---
