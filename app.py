@@ -427,6 +427,9 @@ def page_admin(df_book, df_stock, df_users, sh):
     st.title("🛠️ Admin Dashboard")
     now = get_thai_time()
     
+    # ------------------------------------------------
+    # 1. MONITOR (ดูคนยืมของ - เหมือนเดิม)
+    # ------------------------------------------------
     st.write("### 🕵️‍♂️ Monitor")
     active = pd.DataFrame()
     if not df_book.empty:
@@ -438,24 +441,69 @@ def page_admin(df_book, df_stock, df_users, sh):
             if str(row['Equipment']) not in ["-", "", "nan", "{}"]:
                 found = True
                 st.info(f"👤 **{row['User']}** ({row['Car']})\n📦 {row['Equipment']}\n🕒 คืน: {row['End_Time'].strftime('%H:%M')}")
-    if not found: st.success("✅ ไม่มีใครเบิกของ")
+    if not found: st.success("✅ ไม่มีใครเบิกของ (ของอยู่ครบ)")
 
     st.divider()
-    st.write("### 👥 พนักงาน & Stock")
-    with st.expander("รายชื่อพนักงาน"):
-        ed_users = st.data_editor(df_users, num_rows="dynamic", use_container_width=True)
-        if st.button("บันทึกชื่อ"):
-            save_users(sh, ed_users)
+    
+    # ------------------------------------------------
+    # 2. STOCK MANAGEMENT (กลับมาใช้แบบ Card)
+    # ------------------------------------------------
+    st.write("### 📊 สถานะคลังเครื่องมือ (Stock Status)")
+    
+    status_df = get_stock_status(df_book, df_stock, now)
+    
+    if not status_df.empty:
+        # เรียงลำดับ: เอาของที่เหลือน้อยขึ้นก่อน จะได้เห็นชัดๆ
+        status_df = status_df.sort_values(by="Available")
+        
+        # แสดงผลแบบ Grid (4 คอลัมน์)
+        cols = st.columns(4)
+        for i, (item_name, row) in enumerate(status_df.iterrows()):
+            with cols[i % 4]:
+                # ถ้าของหมดให้โชว์สีแดงตรง delta
+                delta_msg = f"-{int(row['Used'])} ใช้อยู่" if row['Used'] > 0 else "ครบ"
+                if row['Available'] == 0:
+                    delta_color = "inverse" # สีแดง (ใน Dark mode จะเด่น)
+                else:
+                    delta_color = "normal"
+
+                st.metric(
+                    label=item_name,
+                    value=f"{int(row['Available'])} / {int(row['Total'])}",
+                    delta=delta_msg,
+                    delta_color=delta_color
+                )
+    else:
+        st.info("ยังไม่มีข้อมูลอุปกรณ์")
+
+    st.write("") # เว้นบรรทัดนิดนึง
+
+    # ส่วนแก้ไข ซ่อนไว้ใน Expander จะได้ไม่รก
+    with st.expander("📝 แก้ไข / เพิ่ม / ลบ อุปกรณ์ (คลิกที่นี่)"):
+        st.caption("💡 วิธีใช้: แก้ไขตัวเลขในตารางได้เลย / เพิ่มแถวใหม่ด้านล่าง / ลบแถวโดยคลิกหน้าเลขแถวแล้วกด Delete")
+        ed_stock = st.data_editor(
+            df_stock, 
+            num_rows="dynamic", 
+            use_container_width=True,
+            key="stock_editor_admin"
+        )
+        if st.button("💾 บันทึก Stock", type="primary"):
+            save_stock(sh, ed_stock)
+            st.success("บันทึกเรียบร้อย!")
+            time.sleep(1)
             st.rerun()
 
-    status_df = get_stock_status(df_book, df_stock, now)
-    if not status_df.empty:
-        st.dataframe(status_df[['Total', 'Used', 'Available']].sort_values('Available'), use_container_width=True)
-            
-    with st.expander("แก้ไข Stock"):
-        ed_stock = st.data_editor(df_stock, num_rows="dynamic", use_container_width=True)
-        if st.button("บันทึก Stock"):
-            save_stock(sh, ed_stock)
+    st.divider()
+
+    # ------------------------------------------------
+    # 3. USER MANAGEMENT (เหมือนเดิม)
+    # ------------------------------------------------
+    st.write("### 👥 รายชื่อพนักงาน")
+    with st.expander("แก้ไขรายชื่อ"):
+        ed_users = st.data_editor(df_users, num_rows="dynamic", use_container_width=True)
+        if st.button("บันทึกรายชื่อ"):
+            save_users(sh, ed_users)
+            st.success("บันทึกเรียบร้อย")
             st.rerun()
 
 # --- MAIN ---
