@@ -55,47 +55,73 @@ def send_telegram_notify(msg):
         st.error(f"❌ เกิดข้อผิดพลาดในระบบ: {e}")
         return None
 
-# --- LOAD DATA ---
+# --- LOAD DATA (Robust Version: แก้ปัญหา Sheet ซ้ำ) ---
 def load_data():
     client = get_client()
-    sh = client.open("CarBookingDB")
-    
-    # 1. Bookings
     try:
-        ws_book = sh.sheet1
+        sh = client.open("CarBookingDB")
+    except gspread.SpreadsheetNotFound:
+        st.error("❌ หาไฟล์ Google Sheets ชื่อ 'CarBookingDB' ไม่เจอ! กรุณาสร้างไฟล์ก่อนครับ")
+        st.stop()
+    
+    # ดึงรายชื่อ Sheet ทั้งหมดที่มีตอนนี้ ออกมาเป็น List (เพื่อเช็คว่ามีชื่อซ้ำไหม)
+    existing_sheets = [ws.title for ws in sh.worksheets()]
+
+    # -------------------------------------------------------
+    # 1. LOAD BOOKINGS (Sheet แรกสุดเสมอ)
+    # -------------------------------------------------------
+    try:
+        ws_book = sh.get_worksheet(0) # เอา Sheet ที่ 1 เสมอ ไม่สนชื่อ
         data_book = ws_book.get_all_records()
         df_book = pd.DataFrame(data_book)
-        if df_book.empty:
-            df_book = pd.DataFrame(columns=["User", "Task", "Car", "People", "Equipment", "Location", "Start_Time", "End_Time"])
-        else:
+        
+        # สร้าง Header ถ้า Sheet ยังว่างเปล่า
+        if df_book.empty and len(data_book) == 0:
+             df_book = pd.DataFrame(columns=["User", "Task", "Car", "People", "Equipment", "Location", "Start_Time", "End_Time"])
+        
+        # Clean Data
+        if not df_book.empty:
             df_book['Start_Time'] = pd.to_datetime(df_book['Start_Time'].astype(str), errors='coerce')
             df_book['End_Time'] = pd.to_datetime(df_book['End_Time'].astype(str), errors='coerce')
             df_book = df_book.dropna(subset=['Start_Time', 'End_Time'])
-            df_book['Car'] = df_book['Car'].astype(str).str.strip()
-            df_book['Equipment'] = df_book['Equipment'].astype(str)
-    except:
+            if 'Car' in df_book.columns: df_book['Car'] = df_book['Car'].astype(str).str.strip()
+            if 'Equipment' in df_book.columns: df_book['Equipment'] = df_book['Equipment'].astype(str)
+    except Exception as e:
+        st.warning(f"Booking Sheet Error: {e}")
         df_book = pd.DataFrame(columns=["User", "Task", "Car", "People", "Equipment", "Location", "Start_Time", "End_Time"])
 
-    # 2. Stock Master
-    try:
+    # -------------------------------------------------------
+    # 2. LOAD STOCK MASTER
+    # -------------------------------------------------------
+    if "StockMaster" in existing_sheets:
+        # ถ้ามีแล้ว ให้เปิดเลย
         ws_stock = sh.worksheet("StockMaster")
         df_stock = pd.DataFrame(ws_stock.get_all_records())
-        if df_stock.empty: df_stock = pd.DataFrame(columns=["ItemName", "TotalQty", "VolumeScore", "Description"])
-    except:
+    else:
+        # ถ้าไม่มี ค่อยสร้างใหม่
         ws_stock = sh.add_worksheet(title="StockMaster", rows=100, cols=5)
         ws_stock.append_row(["ItemName", "TotalQty", "VolumeScore", "Description"])
         df_stock = pd.DataFrame(columns=["ItemName", "TotalQty", "VolumeScore", "Description"])
 
-    # 3. Users
-    try:
+    if df_stock.empty: 
+        df_stock = pd.DataFrame(columns=["ItemName", "TotalQty", "VolumeScore", "Description"])
+
+    # -------------------------------------------------------
+    # 3. LOAD USERS
+    # -------------------------------------------------------
+    if "Users" in existing_sheets:
+        # ถ้ามีแล้ว ให้เปิดเลย
         ws_users = sh.worksheet("Users")
         df_users = pd.DataFrame(ws_users.get_all_records())
-        if df_users.empty: df_users = pd.DataFrame(columns=["Name", "Department"])
-    except:
+    else:
+        # ถ้าไม่มี ค่อยสร้างใหม่
         ws_users = sh.add_worksheet(title="Users", rows=100, cols=2)
         ws_users.append_row(["Name", "Department"])
         ws_users.append_row(["Admin", "IT"])
         df_users = pd.DataFrame([{"Name": "Admin", "Department": "IT"}])
+
+    if df_users.empty:
+        df_users = pd.DataFrame(columns=["Name", "Department"])
 
     return df_book, df_stock, df_users, sh
 
