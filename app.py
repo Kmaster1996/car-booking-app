@@ -140,7 +140,6 @@ def page_car_booking(df_book, df_stock, df_users, sh):
     st.title("🚗 NavGo: จองรถและอุปกรณ์")
     st.caption(f"Time: {get_thai_time().strftime('%d/%m/%Y %H:%M')}")
     
-    # Init Time Session
     if 'booking_s_time' not in st.session_state:
         now = get_thai_time()
         next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0)
@@ -159,9 +158,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
 
     tab1, tab2, tab3 = st.tabs(["📦 จองใหม่", "📋 ตารางการใช้งาน", "✏️ แก้ไข/ยกเลิก"])
 
-    # ==========================
-    # TAB 1: จองใหม่ (เหมือนเดิม)
-    # ==========================
+    # --- TAB 1: จองใหม่ ---
     with tab1:
         curr_s_date = st.session_state.booking_s_date
         curr_s_time = st.session_state.booking_s_time
@@ -170,7 +167,6 @@ def page_car_booking(df_book, df_stock, df_users, sh):
         check_start_dt = datetime.combine(curr_s_date, curr_s_time)
         check_end_dt = datetime.combine(curr_e_date, curr_e_time)
 
-        # Busy Check
         overlap_now = df_book[(df_book['Start_Time'] < check_end_dt) & (df_book['End_Time'] > check_start_dt)]
         busy_cars_set = set(overlap_now['Car'].str.strip().unique())
 
@@ -185,7 +181,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
             
             st.divider()
             st.subheader("เลือกอุปกรณ์")
-            st.caption(f"ยอดคงเหลือช่วง: {curr_s_time.strftime('%H:%M')} - {curr_e_time.strftime('%H:%M')}")
+            st.caption(f"ยอดช่วง: {curr_s_time.strftime('%H:%M')} - {curr_e_time.strftime('%H:%M')}")
             
             selected_equip = {}
             if not df_stock.empty:
@@ -216,7 +212,6 @@ def page_car_booking(df_book, df_stock, df_users, sh):
             e_date = d2.date_input("คืน", key='booking_e_date')
             e_time = t2.time_input("เวลาคืน", key='booking_e_time')
 
-            # Recommend
             total_load = sum([(df_stock[df_stock['ItemName']==k]['VolumeScore'].values[0] * v) for k, v in selected_equip.items() if k in df_stock['ItemName'].values])
             equip_final_str = ", ".join([f"{k} x{v}" for k, v in selected_equip.items()]) if selected_equip else "-"
 
@@ -251,7 +246,18 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                     df_book = pd.concat([df_book, pd.DataFrame([new_row])], ignore_index=True)
                     save_booking(sh, df_book)
                     
-                    msg = f"📣 <b>จองใหม่ (NavGo)</b>\n👤 {user}\n📝 {task}\n🚗 {sel_car}\n📦 {equip_final_str}\n🕒 {check_start_dt.strftime('%d/%m %H:%M')} - {check_end_dt.strftime('%H:%M')}"
+                    # --- ปรับรูปแบบข้อความแจ้งเตือน (แยกบรรทัด เริ่ม/คืน) ---
+                    msg = (
+                        f"📣 <b>จองใหม่ (NavGo)</b>\n"
+                        f"----------------------------\n"
+                        f"👤 <b>{user}</b>\n"
+                        f"📝 ภารกิจ: {task}\n"
+                        f"🚗 {sel_car}\n"
+                        f"📦 {equip_final_str}\n"
+                        f"----------------------------\n"
+                        f"🟢 <b>วันยืม:</b> {check_start_dt.strftime('%d/%m/%Y %H:%M')}\n"
+                        f"🔴 <b>วันคืน:</b> {check_end_dt.strftime('%d/%m/%Y %H:%M')}"
+                    )
                     send_telegram_notify(msg)
                     
                     st.success("บันทึกสำเร็จ!")
@@ -259,9 +265,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                     time.sleep(1)
                     st.rerun()
 
-    # ==========================
-    # TAB 2: ตาราง
-    # ==========================
+    # --- TAB 2: TABLE ---
     with tab2:
         st.subheader("ตารางการจองทั้งหมด")
         if not df_book.empty:
@@ -270,28 +274,24 @@ def page_car_booking(df_book, df_stock, df_users, sh):
             show_df['End_Time'] = show_df['End_Time'].dt.strftime('%d/%m %H:%M')
             st.dataframe(show_df[['User', 'Task', 'Location', 'Car', 'Equipment', 'Start_Time', 'End_Time']], use_container_width=True)
 
-    # ==========================
-    # TAB 3: แก้ไข / ยกเลิก / ปรับอุปกรณ์
-    # ==========================
+    # --- TAB 3: EDIT / DELETE ---
     with tab3:
-        st.header("✏️ แก้ไข หรือ ยกเลิกรายการ")
-        
+        st.header("✏️ แก้ไข หรือ ยกเลิก")
         if not df_book.empty:
             manage_df = df_book.sort_values("Start_Time", ascending=False)
             booking_options = manage_df['Display'].tolist()
-            selected_booking_str = st.selectbox("เลือกรายการที่ต้องการจัดการ:", booking_options)
+            selected_booking_str = st.selectbox("เลือกรายการ:", booking_options)
             
             if selected_booking_str:
                 row_idx = df_book[df_book['Display'] == selected_booking_str].index[0]
                 row_data = df_book.loc[row_idx]
 
-                st.info(f"เลือกรายการ: **{row_data['Task']}** โดย **{row_data['User']}**")
-                action = st.radio("เลือกสิ่งที่ต้องการทำ:", ["❌ ยกเลิกการจอง (Delete)", "📝 แก้ไขข้อมูลและอุปกรณ์ (Edit)"], horizontal=True)
+                st.info(f"รายการ: **{row_data['Task']}** ({row_data['User']})")
+                action = st.radio("Action:", ["❌ ยกเลิก (Delete)", "📝 แก้ไข (Edit)"], horizontal=True)
 
-                # --- DELETE ---
-                if action == "❌ ยกเลิกการจอง (Delete)":
-                    st.warning("ยืนยันที่จะลบรายการนี้ใช่ไหม? (ลบแล้วกู้คืนไม่ได้)")
-                    if st.button("ยืนยันการลบ", type="primary"):
+                if action == "❌ ยกเลิก (Delete)":
+                    st.warning("ยืนยันที่จะลบ?")
+                    if st.button("ยืนยันลบ", type="primary"):
                         df_book = df_book.drop(row_idx)
                         save_booking(sh, df_book)
                         msg = f"❌ <b>ยกเลิกการจอง</b>\n👤 {row_data['User']}\n📝 {row_data['Task']}\n🚗 {row_data['Car']}"
@@ -300,102 +300,57 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                         time.sleep(1)
                         st.rerun()
 
-                # --- EDIT (UPGRADED) ---
-                elif action == "📝 แก้ไขข้อมูลและอุปกรณ์ (Edit)":
-                    st.write("--- แก้ไขรายละเอียด ---")
-                    
-                    # 1. TIME Inputs
+                elif action == "📝 แก้ไข (Edit)":
+                    st.write("--- แก้ไข ---")
                     c_ed_t1, c_ed_t2 = st.columns(2)
-                    new_s_date = c_ed_t1.date_input("วันที่เริ่ม (ใหม่)", value=row_data['Start_Time'].date())
-                    new_s_time = c_ed_t1.time_input("เวลาเริ่ม (ใหม่)", value=row_data['Start_Time'].time())
-                    new_e_date = c_ed_t2.date_input("วันที่คืน (ใหม่)", value=row_data['End_Time'].date())
+                    new_s_date = c_ed_t1.date_input("วันยืม (ใหม่)", value=row_data['Start_Time'].date())
+                    new_s_time = c_ed_t1.time_input("เวลายืม (ใหม่)", value=row_data['Start_Time'].time())
+                    new_e_date = c_ed_t2.date_input("วันคืน (ใหม่)", value=row_data['End_Time'].date())
                     new_e_time = c_ed_t2.time_input("เวลาคืน (ใหม่)", value=row_data['End_Time'].time())
                     
                     new_start_dt = datetime.combine(new_s_date, new_s_time)
                     new_end_dt = datetime.combine(new_e_date, new_e_time)
 
-                    # 2. DETAILS Inputs
                     c_ed1, c_ed2 = st.columns(2)
                     with c_ed1:
                         ed_task = st.text_input("ภารกิจ", value=row_data['Task'])
                         ed_loc = st.text_input("สถานที่", value=row_data['Location'])
                     with c_ed2:
-                        ed_car = st.selectbox("รถที่ใช้", list(CAR_SPECS.keys()), index=list(CAR_SPECS.keys()).index(row_data['Car']) if row_data['Car'] in CAR_SPECS else 0)
-                        ed_ppl = st.number_input("จำนวนคน", 1, 10, int(row_data['People']))
+                        ed_car = st.selectbox("รถ", list(CAR_SPECS.keys()), index=list(CAR_SPECS.keys()).index(row_data['Car']) if row_data['Car'] in CAR_SPECS else 0)
+                        ed_ppl = st.number_input("คน", 1, 10, int(row_data['People']))
 
-                    # 3. EQUIPMENT Inputs (หัวใจสำคัญของการแก้)
-                    st.write("--- แก้ไขอุปกรณ์ ---")
-                    
-                    # แกะรายการของเดิมออกมาเป็น Dict
+                    st.write("--- อุปกรณ์ (คำนวณ Stock ใหม่) ---")
                     current_equip_dict = parse_equip_str(row_data['Equipment'])
-                    
-                    # คำนวณ Stock ในช่วงเวลา "ใหม่" โดยไม่นับรายการของ "ตัวเอง" (Self-Exclude)
-                    # หา Booking อื่นที่ทับซ้อนช่วงเวลาใหม่
-                    other_overlaps = df_book[
-                        (df_book.index != row_idx) & # ไม่เอาตัวเอง
-                        (df_book['Start_Time'] < new_end_dt) & 
-                        (df_book['End_Time'] > new_start_dt)
-                    ]
+                    other_overlaps = df_book[(df_book.index != row_idx) & (df_book['Start_Time'] < new_end_dt) & (df_book['End_Time'] > new_start_dt)]
                     
                     edited_equip_result = {}
-                    
                     if not df_stock.empty:
-                        # วนลูปสร้างช่องกรอกอุปกรณ์ทุกชิ้น
-                        cols = st.columns(3) # จัดวางสวยๆ 3 คอลัมน์
+                        cols = st.columns(3)
                         for i, (idx_stock, stock_row) in enumerate(df_stock.iterrows()):
                             item_name = stock_row['ItemName']
                             total_qty = int(stock_row['TotalQty'])
-                            
-                            # ของที่คนอื่นใช้อยู่ในช่วงเวลานั้น
                             used_by_others = sum([parse_equip_str(r['Equipment']).get(item_name, 0) for _, r in other_overlaps.iterrows()])
-                            
-                            # ของที่เหลือให้เราใช้ได้ (รวมของที่เราเคยถืออยู่ด้วย)
-                            max_avail_for_me = max(0, total_qty - used_by_others)
-                            
-                            # ค่าเดิมที่เราเคยจองไว้ (ถ้ามี)
-                            default_val = current_equip_dict.get(item_name, 0)
-                            # ถ้าค่าเดิมเกินกว่าที่มีให้ (กรณี Stock ลดลง) ให้ปรับลงมา
-                            if default_val > max_avail_for_me: default_val = max_avail_for_me
+                            max_avail = max(0, total_qty - used_by_others)
+                            default_val = min(current_equip_dict.get(item_name, 0), max_avail)
                             
                             with cols[i % 3]:
-                                st.caption(f"{item_name} (ว่าง {max_avail_for_me})")
-                                new_qty = st.number_input(
-                                    f"qty_{item_name}", 
-                                    min_value=0, 
-                                    max_value=max_avail_for_me, 
-                                    value=default_val, 
-                                    key=f"edit_eq_{row_idx}_{item_name}", # Unique Key
-                                    label_visibility="collapsed",
-                                    disabled=(max_avail_for_me == 0 and default_val == 0)
-                                )
-                                if new_qty > 0:
-                                    edited_equip_result[item_name] = new_qty
+                                new_qty = st.number_input(f"{item_name} (ว่าง {max_avail})", 0, max_avail, default_val, key=f"ed_{row_idx}_{item_name}")
+                                if new_qty > 0: edited_equip_result[item_name] = new_qty
                     
-                    # 4. SAVE BUTTON
-                    st.write("")
-                    if st.button("💾 บันทึกการแก้ไข", type="primary"):
+                    if st.button("💾 บันทึกแก้ไข", type="primary"):
                         if new_start_dt >= new_end_dt:
                             st.error("เวลาคืนต้องหลังเวลาเริ่ม")
                         else:
-                            # เช็คคิวรถ (เฉพาะรถบริษัท และไม่นับตัวเอง)
                             specs = CAR_SPECS.get(ed_car, {})
                             is_conflict = False
                             if specs.get('type') == 'company':
-                                car_conflict = df_book[
-                                    (df_book.index != row_idx) & 
-                                    (df_book['Car'] == ed_car) &
-                                    (df_book['Start_Time'] < new_end_dt) & 
-                                    (df_book['End_Time'] > new_start_dt)
-                                ]
+                                car_conflict = df_book[(df_book.index != row_idx) & (df_book['Car'] == ed_car) & (df_book['Start_Time'] < new_end_dt) & (df_book['End_Time'] > new_start_dt)]
                                 if not car_conflict.empty: is_conflict = True
                             
                             if is_conflict:
-                                st.error(f"❌ รถ {ed_car} ไม่ว่างในช่วงเวลาใหม่นี้")
+                                st.error(f"❌ รถ {ed_car} ไม่ว่างช่วงใหม่นี้")
                             else:
-                                # สร้าง String อุปกรณ์ใหม่
                                 new_equip_str = ", ".join([f"{k} x{v}" for k, v in edited_equip_result.items()]) if edited_equip_result else "-"
-                                
-                                # Update DataFrame
                                 df_book.at[row_idx, 'Task'] = ed_task
                                 df_book.at[row_idx, 'Location'] = ed_loc
                                 df_book.at[row_idx, 'Car'] = ed_car
@@ -403,34 +358,71 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                                 df_book.at[row_idx, 'Start_Time'] = new_start_dt
                                 df_book.at[row_idx, 'End_Time'] = new_end_dt
                                 df_book.at[row_idx, 'Equipment'] = new_equip_str
-                                
                                 save_booking(sh, df_book)
                                 
+                                # --- แจ้งเตือนแก้ไข แยกบรรทัดชัดเจน ---
                                 msg = (
                                     f"✏️ <b>แก้ไขรายการ (NavGo)</b>\n"
-                                    f"👤 {row_data['User']}\n"
+                                    f"👤 <b>{row_data['User']}</b>\n"
                                     f"📝 {ed_task}\n"
-                                    f"🚗 {ed_car}\n"
                                     f"📦 {new_equip_str}\n"
-                                    f"🕒 ใหม่: {new_start_dt.strftime('%d/%m %H:%M')} - {new_end_dt.strftime('%H:%M')}"
+                                    f"----------------------------\n"
+                                    f"🟢 <b>วันยืมใหม่:</b> {new_start_dt.strftime('%d/%m/%Y %H:%M')}\n"
+                                    f"🔴 <b>วันคืนใหม่:</b> {new_end_dt.strftime('%d/%m/%Y %H:%M')}"
                                 )
                                 send_telegram_notify(msg)
-                                
                                 st.success("แก้ไขเรียบร้อย!")
                                 time.sleep(1)
                                 st.rerun()
         else:
-            st.info("ไม่มีรายการจอง")
-
+            st.info("ไม่มีรายการ")
+            
 # --- PAGE: ADMIN & INVENTORY ---
 def page_admin(df_book, df_stock, df_users, sh):
     st.title("🛠️ Admin Dashboard")
     now = get_thai_time()
     
     # ------------------------------------------------
-    # 1. MONITOR (ดูคนยืมของ - เหมือนเดิม)
+    # 1. DAILY REMINDER (เพิ่มใหม่!)
     # ------------------------------------------------
-    st.write("### 🕵️‍♂️ Monitor")
+    st.write("### 🔔 แจ้งเตือนการคืนของ (Manual Trigger)")
+    with st.expander("กดเพื่อตรวจสอบและแจ้งเตือนเข้ากลุ่ม Telegram"):
+        st.write("ระบบจะค้นหารายการที่ **ครบกำหนดคืนวันนี้** หรือ **เกินกำหนด** แล้วส่งสรุปเข้ากลุ่ม")
+        if st.button("📢 ส่งแจ้งเตือนรายการคืนวันนี้", type="primary"):
+            if df_book.empty:
+                st.warning("ไม่มีข้อมูลการจอง")
+            else:
+                # หาคนที่ต้องคืนวันนี้ (หรือเกินกำหนดแล้วยังไม่คืน - ในที่นี้ดูแค่เวลาจบ)
+                # Logic: End_Time คือ "วันนี้" (เทียบแค่วันที่)
+                today_str = now.strftime('%Y-%m-%d')
+                
+                # กรองรายการที่ 'วันคืน' ตรงกับ 'วันนี้'
+                due_today = df_book[df_book['End_Time'].dt.strftime('%Y-%m-%d') == today_str]
+                
+                if due_today.empty:
+                    st.info("✅ วันนี้ไม่มีรายการครบกำหนดคืน")
+                else:
+                    count = len(due_today)
+                    msg_header = f"📢 <b>แจ้งเตือนรายการคืนวันนี้ ({now.strftime('%d/%m')})</b>\nมีทั้งหมด {count} รายการ\n----------------------------\n"
+                    msg_body = ""
+                    for _, row in due_today.iterrows():
+                        msg_body += (
+                            f"👤 <b>{row['User']}</b>\n"
+                            f"🚗 {row['Car']}\n"
+                            f"📦 {row['Equipment']}\n"
+                            f"🔴 คืนเวลา: {row['End_Time'].strftime('%H:%M')}\n\n"
+                        )
+                    
+                    full_msg = msg_header + msg_body + "<i>รบกวนตรวจสอบและคืนของให้ตรงเวลาครับ</i>"
+                    send_telegram_notify(full_msg)
+                    st.success(f"ส่งแจ้งเตือน {count} รายการเรียบร้อย!")
+
+    st.divider()
+
+    # ------------------------------------------------
+    # 2. MONITOR (เหมือนเดิม)
+    # ------------------------------------------------
+    st.write("### 🕵️‍♂️ Monitor (Real-time)")
     active = pd.DataFrame()
     if not df_book.empty:
         active = df_book[(df_book['Start_Time'] <= now) & (df_book['End_Time'] >= now)]
@@ -441,69 +433,36 @@ def page_admin(df_book, df_stock, df_users, sh):
             if str(row['Equipment']) not in ["-", "", "nan", "{}"]:
                 found = True
                 st.info(f"👤 **{row['User']}** ({row['Car']})\n📦 {row['Equipment']}\n🕒 คืน: {row['End_Time'].strftime('%H:%M')}")
-    if not found: st.success("✅ ไม่มีใครเบิกของ (ของอยู่ครบ)")
+    if not found: st.success("✅ ไม่มีใครเบิกของ")
 
     st.divider()
     
     # ------------------------------------------------
-    # 2. STOCK MANAGEMENT (กลับมาใช้แบบ Card)
+    # 3. STOCK & USER (เหมือนเดิม)
     # ------------------------------------------------
-    st.write("### 📊 สถานะคลังเครื่องมือ (Stock Status)")
-    
+    st.write("### 📊 สถานะคลังเครื่องมือ")
     status_df = get_stock_status(df_book, df_stock, now)
-    
     if not status_df.empty:
-        # เรียงลำดับ: เอาของที่เหลือน้อยขึ้นก่อน จะได้เห็นชัดๆ
         status_df = status_df.sort_values(by="Available")
-        
-        # แสดงผลแบบ Grid (4 คอลัมน์)
         cols = st.columns(4)
         for i, (item_name, row) in enumerate(status_df.iterrows()):
             with cols[i % 4]:
-                # ถ้าของหมดให้โชว์สีแดงตรง delta
                 delta_msg = f"-{int(row['Used'])} ใช้อยู่" if row['Used'] > 0 else "ครบ"
-                if row['Available'] == 0:
-                    delta_color = "inverse" # สีแดง (ใน Dark mode จะเด่น)
-                else:
-                    delta_color = "normal"
-
-                st.metric(
-                    label=item_name,
-                    value=f"{int(row['Available'])} / {int(row['Total'])}",
-                    delta=delta_msg,
-                    delta_color=delta_color
-                )
-    else:
-        st.info("ยังไม่มีข้อมูลอุปกรณ์")
-
-    st.write("") # เว้นบรรทัดนิดนึง
-
-    # ส่วนแก้ไข ซ่อนไว้ใน Expander จะได้ไม่รก
-    with st.expander("📝 แก้ไข / เพิ่ม / ลบ อุปกรณ์ (คลิกที่นี่)"):
-        st.caption("💡 วิธีใช้: แก้ไขตัวเลขในตารางได้เลย / เพิ่มแถวใหม่ด้านล่าง / ลบแถวโดยคลิกหน้าเลขแถวแล้วกด Delete")
-        ed_stock = st.data_editor(
-            df_stock, 
-            num_rows="dynamic", 
-            use_container_width=True,
-            key="stock_editor_admin"
-        )
-        if st.button("💾 บันทึก Stock", type="primary"):
+                delta_color = "inverse" if row['Available'] == 0 else "normal"
+                st.metric(label=item_name, value=f"{int(row['Available'])} / {int(row['Total'])}", delta=delta_msg, delta_color=delta_color)
+    
+    with st.expander("📝 แก้ไข Stock"):
+        ed_stock = st.data_editor(df_stock, num_rows="dynamic", use_container_width=True, key="admin_stock")
+        if st.button("💾 บันทึก Stock"):
             save_stock(sh, ed_stock)
-            st.success("บันทึกเรียบร้อย!")
-            time.sleep(1)
             st.rerun()
 
     st.divider()
-
-    # ------------------------------------------------
-    # 3. USER MANAGEMENT (เหมือนเดิม)
-    # ------------------------------------------------
     st.write("### 👥 รายชื่อพนักงาน")
     with st.expander("แก้ไขรายชื่อ"):
-        ed_users = st.data_editor(df_users, num_rows="dynamic", use_container_width=True)
+        ed_users = st.data_editor(df_users, num_rows="dynamic", use_container_width=True, key="admin_users")
         if st.button("บันทึกรายชื่อ"):
             save_users(sh, ed_users)
-            st.success("บันทึกเรียบร้อย")
             st.rerun()
 
 # --- MAIN ---
