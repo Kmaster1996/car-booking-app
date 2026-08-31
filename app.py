@@ -239,6 +239,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
         "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 1500, "type": "company"},
         "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2200, "type": "company"},
+        "Geele-1": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": {"max_seats": 99, "cargo_score": 9999, "type": "private"},
         "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": {"max_seats": 99, "cargo_score": 9999, "type": "no_car"}
     }
