@@ -239,7 +239,32 @@ def get_overdue_cars(df_vehicles, df_mitems, threshold_km=2000):
     return overdue
 
 # --- HELPERS (Booking Calendar) ---
-_CAL_PALETTE = ["#7F77DD", "#1D9E75", "#D85A30", "#3B82F6", "#D4537E", "#F5A524", "#14B8A6", "#8B5CF6"]
+# สีประจำรถแต่ละรุ่นแบบกำหนดตายตัว (ไม่ใช่สุ่ม) เพื่อให้จำง่ายว่าสีไหนคือรถอะไร
+_CAR_COLOR_MAP = {
+    "Honda Jazz 2019": "#3B82F6",              # ฟ้า
+    "Isuzu Mu-X": "#7F77DD",                   # ม่วง
+    "Isuzu D-max 4 Doors": "#1D9E75",          # เขียว
+    "Geele-1": "#F5A524",                      # ส้ม
+    "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "#8B5CF6",   # ม่วงอ่อน
+    "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "#8A8F98",      # เทา
+}
+_CAR_SHORT_NAME = {
+    "Honda Jazz 2019": "Jazz",
+    "Isuzu Mu-X": "Mu-X",
+    "Isuzu D-max 4 Doors": "D-max",
+    "Geele-1": "Geele",
+    "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "ส่วนตัว",
+    "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "ไม่ใช้รถ",
+}
+_CAR_FALLBACK_PALETTE = ["#D85A30", "#D4537E", "#14B8A6", "#6366F1"]
+_CAR_LEGEND_SQUARE = {
+    "Honda Jazz 2019": "🟦",
+    "Isuzu Mu-X": "🟪",
+    "Isuzu D-max 4 Doors": "🟩",
+    "Geele-1": "🟧",
+    "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "🟫",
+    "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "⬜",
+}
 
 def get_car_icon(car_name):
     """ไอคอนตามประเภทรถ ช่วยให้เห็นปุ๊บรู้เลยว่าเป็นรถอะไรโดยไม่ต้องอ่านชื่อเต็ม"""
@@ -252,11 +277,17 @@ def get_car_icon(car_name):
     elif "ส่วนตัว" in car_str: return "🚘"
     return "🚗"
 
-def user_color_hex(user):
-    """แจกสีให้แต่ละคนแบบคงที่ (ไม่ใช้ hash() เพราะสุ่มใหม่ทุกครั้งที่รีสตาร์ทแอป)"""
-    s = str(user)
-    val = sum(ord(c) for c in s)
-    return _CAL_PALETTE[val % len(_CAL_PALETTE)]
+def car_color_hex(car_name):
+    """สีประจำรถ ใช้ค่าที่กำหนดไว้ตายตัวก่อน ถ้าเป็นรถที่ไม่รู้จัก (เผื่อเพิ่มคันใหม่ในอนาคต) ค่อย fallback เป็นสีหมุนเวียน"""
+    car_str = str(car_name)
+    if car_str in _CAR_COLOR_MAP:
+        return _CAR_COLOR_MAP[car_str]
+    val = sum(ord(c) for c in car_str)
+    return _CAR_FALLBACK_PALETTE[val % len(_CAR_FALLBACK_PALETTE)]
+
+def car_short_name(car_name):
+    """ชื่อย่อรถ สำหรับแสดงบนแท่งที่พื้นที่จำกัด"""
+    return _CAR_SHORT_NAME.get(str(car_name), str(car_name))
 
 @st.dialog("รายละเอียดการจอง")
 def show_booking_detail(row):
@@ -320,12 +351,13 @@ def render_booking_calendar(df_book, car_options=None):
                 f_cols = st.columns(len(car_options))
                 for col, c in zip(f_cols, car_options):
                     with col:
+                        chk_label = f"{_CAR_LEGEND_SQUARE.get(c, '⬛')}{get_car_icon(c)} {short_label.get(c, c)}"
                         st.session_state['cal_car_checks'][c] = st.checkbox(
-                            short_label.get(c, c),
+                            chk_label,
                             value=st.session_state['cal_car_checks'][c],
                             key=f"cal_chk_{c}",
                         )
-                st.caption("💡 ติ๊กออกที่ \"📦 ไม่ใช้รถ\" เพื่อดูเฉพาะรายการที่ยืมรถจริง")
+                st.caption("💡 สี่เหลี่ยมสีหน้าชื่อรถ = สีที่ใช้แยกรถในปฏิทินด้านล่าง | ติ๊กออกที่ \"📦 ไม่ใช้รถ\" เพื่อดูเฉพาะรายการที่ยืมรถจริง")
             st.write("")
 
         checked_cars = {c for c, v in st.session_state.get('cal_car_checks', {}).items() if v} if car_options else None
@@ -414,8 +446,8 @@ def render_booking_calendar(df_book, car_options=None):
                         else:
                             row = slot['row']
                             btn_key = f"cal_ev_{year}_{month}_{w_idx}_{lane_i}_{slot['idx']}"
-                            color = user_color_hex(row['User'])
-                            label = f"{get_car_icon(row['Car'])} {row['User']}: {row['Task']}"
+                            color = car_color_hex(row['Car'])
+                            label = f"{get_car_icon(row['Car'])} {car_short_name(row['Car'])} | {row['User']}: {row['Task']}"
                             style_rules.append(
                                 f".st-key-{btn_key} button {{"
                                 f"background-color:{color} !important;color:#fff !important;border:none !important;"
