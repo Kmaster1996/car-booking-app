@@ -149,13 +149,23 @@ def save_users(sh, df):
     ws.clear()
     ws.update([df.columns.values.tolist()] + df.values.tolist())
 
+def _json_safe_cell(v):
+    """แปลงค่าที่ JSON ส่งให้ Google Sheets ไม่ได้ (Timestamp/datetime/date/NaN) ให้เป็น string หรือค่าว่าง"""
+    if isinstance(v, (pd.Timestamp, datetime, date)):
+        return "" if pd.isna(v) else v.strftime('%Y-%m-%d')
+    if isinstance(v, float) and pd.isna(v):
+        return ""
+    return v
+
 def save_sheet(sh, sheet_name, df):
-    """ใช้บันทึกชีตของ Car Maintenance (Vehicles/MaintItems/Devices/Logs)"""
+    """ใช้บันทึกชีตของ Car Maintenance (Vehicles/MaintItems/Devices/Logs)
+    เช็คและแปลงค่าทีละเซลล์ (ไม่ใช่ทั้งคอลัมน์) เพราะคอลัมน์วันที่อาจมีทั้ง
+    Timestamp (จากแถวเก่าที่โหลดมา) และ string (จากแถวใหม่ที่เพิ่งเพิ่ม) ปนกันอยู่
+    ถ้าเช็คแค่ dtype ของทั้งคอลัมน์ จะพลาดแปลง Timestamp ที่หลงเหลืออยู่ จนส่งเป็น JSON ไม่ได้"""
     ws = sh.worksheet(sheet_name)
     export_df = df.copy()
     for col in export_df.columns:
-        if pd.api.types.is_datetime64_any_dtype(export_df[col]):
-            export_df[col] = export_df[col].dt.strftime('%Y-%m-%d')
+        export_df[col] = export_df[col].apply(_json_safe_cell)
     export_df = export_df.fillna("")
     ws.clear()
     ws.update([export_df.columns.values.tolist()] + export_df.values.tolist())
