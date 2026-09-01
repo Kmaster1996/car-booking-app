@@ -244,7 +244,7 @@ _CAR_COLOR_MAP = {
     "Honda Jazz 2019": "#3B82F6",              # ฟ้า
     "Isuzu Mu-X": "#7F77DD",                   # ม่วง
     "Isuzu D-max 4 Doors": "#1D9E75",          # เขียว
-    "Geele-1": "#F5A524",                      # ส้ม
+    "Geely Ex5": "#F5A524",                      # ส้ม
     "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "#8B5CF6",   # ม่วงอ่อน
     "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "#8A8F98",      # เทา
 }
@@ -252,7 +252,7 @@ _CAR_SHORT_NAME = {
     "Honda Jazz 2019": "Jazz",
     "Isuzu Mu-X": "Mu-X",
     "Isuzu D-max 4 Doors": "D-max",
-    "Geele-1": "Geele",
+    "Geely Ex5": "Geely",
     "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "ส่วนตัว",
     "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "ไม่ใช้รถ",
 }
@@ -261,7 +261,7 @@ _CAR_LEGEND_SQUARE = {
     "Honda Jazz 2019": "🟦",
     "Isuzu Mu-X": "🟪",
     "Isuzu D-max 4 Doors": "🟩",
-    "Geele-1": "🟧",
+    "Geely Ex5": "🟧",
     "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "🟫",
     "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "⬜",
 }
@@ -271,7 +271,7 @@ def get_car_icon(car_name):
     car_str = str(car_name)
     if "Mu-X" in car_str: return "🚙"
     elif "D-max" in car_str: return "🛻"
-    elif "Geele" in car_str: return "⚡"
+    elif "Geely" in car_str: return "⚡"
     elif "Jazz" in car_str: return "🚗"
     elif "ยืมเฉพาะของ" in car_str or "ไม่ใช้รถ" in car_str: return "📦"
     elif "ส่วนตัว" in car_str: return "🚘"
@@ -566,7 +566,7 @@ def page_car_booking(df_book, df_stock, df_users, df_vehicles, df_mitems, sh):
         "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 1500, "type": "company"},
         "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2200, "type": "company"},
-        "Geele-1": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
+        "Geely Ex5": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": {"max_seats": 99, "cargo_score": 9999, "type": "private"},
         "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": {"max_seats": 99, "cargo_score": 9999, "type": "no_car"}
     }
