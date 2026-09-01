@@ -151,7 +151,6 @@ def save_users(sh, df):
     ws.update([df.columns.values.tolist()] + df.values.tolist())
 
 def _json_safe_cell(v):
-    """แปลงค่าที่ JSON ส่งให้ Google Sheets ไม่ได้ (Timestamp/datetime/date/NaN) ให้เป็น string หรือค่าว่าง"""
     if isinstance(v, (pd.Timestamp, datetime, date)):
         return "" if pd.isna(v) else v.strftime('%Y-%m-%d')
     if isinstance(v, float) and pd.isna(v):
@@ -159,10 +158,6 @@ def _json_safe_cell(v):
     return v
 
 def save_sheet(sh, sheet_name, df):
-    """ใช้บันทึกชีตของ Car Maintenance (Vehicles/MaintItems/Devices/Logs)
-    เช็คและแปลงค่าทีละเซลล์ (ไม่ใช่ทั้งคอลัมน์) เพราะคอลัมน์วันที่อาจมีทั้ง
-    Timestamp (จากแถวเก่าที่โหลดมา) และ string (จากแถวใหม่ที่เพิ่งเพิ่ม) ปนกันอยู่
-    ถ้าเช็คแค่ dtype ของทั้งคอลัมน์ จะพลาดแปลง Timestamp ที่หลงเหลืออยู่ จนส่งเป็น JSON ไม่ได้"""
     ws = sh.worksheet(sheet_name)
     export_df = df.copy()
     for col in export_df.columns:
@@ -222,7 +217,6 @@ def status_label(percent):
 _CAL_COLOR_EMOJIS = ["🟪", "🟩", "🟧", "🟥", "🟦", "🟨"]
 
 def user_color_emoji(user):
-    """แจกสีให้แต่ละคนแบบคงที่ (ไม่ใช้ hash() เพราะสุ่มใหม่ทุกครั้งที่รีสตาร์ทแอป)"""
     s = str(user)
     val = sum(ord(c) for c in s)
     return _CAL_COLOR_EMOJIS[val % len(_CAL_COLOR_EMOJIS)]
@@ -269,26 +263,42 @@ def render_booking_calendar(df_book, car_options=None):
     with nav2:
         st.markdown(f"<div style='text-align:center;font-weight:600;padding-top:6px;'>{thai_months[month]} {year + 543}</div>", unsafe_allow_html=True)
 
-    # --- ปุ่ม Filter รถ ---
+    # --- Checkbox Filter รถ ---
     if car_options:
-        # ย่อชื่อยาวๆ ให้เหลือสั้นแค่บนปุ่ม แต่ยังกรองด้วยชื่อเต็มเดิม
+        # Checkbox เปิด-ปิดสำหรับกรณีไม่ยืมรถ
+        hide_no_car = st.checkbox("🚫 ไม่แสดงรายการยืมเฉพาะของ (ซ่อน 'ไม่ใช้รถ')", value=False, key="cal_hide_no_car")
+
         short_label = {
             "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "🚙 รถส่วนตัว",
             "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ไม่ใช้รถ",
         }
-        filter_items = [("ทั้งหมด", "ทั้งหมด")] + [(short_label.get(c, c), c) for c in car_options]
+
+        # กรองรายการตัวเลือก
+        available_options = [c for c in car_options if not (hide_no_car and c == "📦 ไม่ใช้รถ (ยืมเฉพาะของ)")]
+        filter_items = [("ทั้งหมด", "ทั้งหมด")] + [(short_label.get(c, c), c) for c in available_options]
+
+        st.caption("เลือกกรองคันที่ต้องการดู:")
         f_cols = st.columns(len(filter_items))
         for col, (label, value) in zip(f_cols, filter_items):
             with col:
-                is_active = st.session_state['cal_car_filter'] == value
-                if st.button(label, key=f"cal_filter_{value}", use_container_width=True,
-                             type="primary" if is_active else "secondary"):
+                is_checked = st.checkbox(
+                    label,
+                    value=(st.session_state['cal_car_filter'] == value),
+                    key=f"cal_chk_{value}"
+                )
+                if is_checked and st.session_state['cal_car_filter'] != value:
                     st.session_state['cal_car_filter'] = value
                     st.rerun()
+
+        # หากเคยเลือก "ไม่ใช้รถ" แล้วไปกดสวิตช์ซ่อน ให้เด้งกลับมาเลือก "ทั้งหมด"
+        if hide_no_car and st.session_state['cal_car_filter'] == "📦 ไม่ใช้รถ (ยืมเฉพาะของ)":
+            st.session_state['cal_car_filter'] = "ทั้งหมด"
+            st.rerun()
+
         st.write("")
 
     days_in_month = calendar.monthrange(year, month)[1]
-    first_weekday = (date(year, month, 1).weekday() + 1) % 7  # ให้อาทิตย์ = 0
+    first_weekday = (date(year, month, 1).weekday() + 1) % 7
     cells = [None] * first_weekday + list(range(1, days_in_month + 1))
     while len(cells) % 7 != 0:
         cells.append(None)
@@ -300,8 +310,14 @@ def render_booking_calendar(df_book, car_options=None):
         c.markdown(f"<div style='text-align:center;font-size:12px;color:gray;'>{name}</div>", unsafe_allow_html=True)
 
     df_valid = df_book.dropna(subset=['Start_Time', 'End_Time']) if not df_book.empty else df_book
-    if car_options and st.session_state.get('cal_car_filter', 'ทั้งหมด') != "ทั้งหมด" and not df_valid.empty:
-        df_valid = df_valid[df_valid['Car'] == st.session_state['cal_car_filter']]
+    
+    # กรองข้อมูลรายการตามสถานะ Checkbox
+    if not df_valid.empty:
+        if st.session_state.get('cal_hide_no_car', False):
+            df_valid = df_valid[df_valid['Car'] != "📦 ไม่ใช้รถ (ยืมเฉพาะของ)"]
+
+        if car_options and st.session_state.get('cal_car_filter', 'ทั้งหมด') != "ทั้งหมด":
+            df_valid = df_valid[df_valid['Car'] == st.session_state['cal_car_filter']]
 
     for w_idx, week in enumerate(weeks):
         if all(d is None for d in week):
