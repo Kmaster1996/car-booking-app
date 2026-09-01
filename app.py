@@ -269,11 +269,9 @@ def render_booking_calendar(df_book, car_options=None):
     with nav2:
         st.markdown(f"<div style='text-align:center;font-weight:600;padding-top:6px;'>{thai_months[month]} {year + 543}</div>", unsafe_allow_html=True)
 
-    # --- Checkbox Switch สำหรับสลับโหมดการดู ยืมของ / ยืมรถ ---
     show_only_equip = st.checkbox("📦 แสดงเฉพาะรายการยืมของ (ซ่อนการจองรถ)", value=False, key="cal_show_only_equip")
 
     if car_options:
-        # กรองตัวเลือกแถบปุ่มกดด้านบน
         if show_only_equip:
             available_options = ["📦 ไม่ใช้รถ (ยืมเฉพาะของ)"]
         else:
@@ -302,7 +300,6 @@ def render_booking_calendar(df_book, car_options=None):
                     st.session_state['cal_car_filter'] = value
                     st.rerun()
 
-        # ป้องกันค้าง filter เก่าที่ไม่มีอยู่ในสวิตช์ปัจจุบัน
         if st.session_state['cal_car_filter'] not in ["ทั้งหมด"] + available_options:
             st.session_state['cal_car_filter'] = "ทั้งหมด"
             st.rerun()
@@ -323,17 +320,13 @@ def render_booking_calendar(df_book, car_options=None):
 
     df_valid = df_book.dropna(subset=['Start_Time', 'End_Time']) if not df_book.empty else df_book
     
-    # --- LOGIC การกรองตามสวิตช์ ---
     if not df_valid.empty:
         NO_CAR_VAL = "📦 ไม่ใช้รถ (ยืมเฉพาะของ)"
         if show_only_equip:
-            # ติ๊กช่อง = แสดงเฉพาะการยืมของ
             df_valid = df_valid[df_valid['Car'] == NO_CAR_VAL]
         else:
-            # หน้าปกติ = ซ่อนการยืมของทั้งหมด (แสดงเฉพาะรายการจองรถ)
             df_valid = df_valid[df_valid['Car'] != NO_CAR_VAL]
 
-        # กรองเพิ่มเติมหากกดเลือกปุ่มย่อยคันเฉพาะ
         if car_options and st.session_state.get('cal_car_filter', 'ทั้งหมด') != "ทั้งหมด":
             df_valid = df_valid[df_valid['Car'] == st.session_state['cal_car_filter']]
 
@@ -387,7 +380,6 @@ def render_booking_calendar(df_book, car_options=None):
                         st.write("")
                     else:
                         row = slot['row']
-                        # เปลี่ยนแปลงตรงนี้: ใช้ไอคอนรถแทนไอคอนสีแบบเดิม
                         car_icon = get_car_icon(row['Car'])
                         label = f"{car_icon} {row['User']}: {row['Task']}"
                         if len(label) > 26: label = label[:24] + "…"
@@ -481,7 +473,13 @@ def page_admin(df_book, df_stock, df_users, sh):
             st.rerun()
 
 # --- PAGE: CAR BOOKING ---
-def page_car_booking(df_book, df_stock, df_users, sh):
+def page_car_booking(data, sh):
+    df_book = data["book"]
+    df_stock = data["stock"]
+    df_users = data["users"]
+    df_vehicles = data["vehicles"]
+    df_mitems = data["mitems"]
+
     st.title("🚗 NavGo: จองรถและอุปกรณ์")
     st.caption(f"Time: {get_thai_time().strftime('%d/%m/%Y %H:%M')}")
 
@@ -493,7 +491,6 @@ def page_car_booking(df_book, df_stock, df_users, sh):
         st.session_state.booking_s_date = now.date()
         st.session_state.booking_e_date = now.date()
 
-    # นำรถส่วนตัวออกแล้ว เหลือเฉพาะตัวเลือกที่กำหนด
     CAR_SPECS = {
         "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 1500, "type": "company"},
         "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
@@ -580,7 +577,35 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                 if specs.get('type') == 'company':
                     final_overlap = df_book[(df_book['Start_Time'] < check_end_dt) & (df_book['End_Time'] > check_start_dt) & (df_book['Car'] == sel_car)]
 
-                if not final_overlap.empty:
+                # --- [LOGIC เพิ่มเติม] เช็คการล็อกจองรถถ้าระยะทางเกินกำหนด +2,000 กม. ---
+                is_mileage_blocked = False
+                blocked_reason = ""
+                
+                if specs.get('type') == 'company':
+                    v_match = df_vehicles[df_vehicles['Name'].str.strip() == sel_car.strip()]
+                    if not v_match.empty:
+                        v_row = v_match.iloc[0]
+                        v_id = v_row['ID']
+                        curr_mileage = float(v_row['CurrentMileage'])
+                        
+                        # ค้นหา MaintItems ของรถคันนี้
+                        v_items = df_mitems[df_mitems['VehicleID'] == v_id]
+                        for _, item in v_items.iterrows():
+                            interval_km = float(item['IntervalKm'])
+                            last_mileage = float(item['LastMileage'])
+                            
+                            if interval_km > 0:
+                                max_allowed_km = last_mileage + interval_km + 2000  # ยอมให้เกินได้ไม่เกิน 2,000 กม.
+                                if curr_mileage > max_allowed_km:
+                                    is_mileage_blocked = True
+                                    over_km = curr_mileage - (last_mileage + interval_km)
+                                    blocked_reason = f"รถคันนี้เกินกำหนดเช็คระยะ ({item['Name']}) มาแล้ว {int(over_km):,} กม. (อนุญาตให้เกินได้ไม่เกิน 2,000 กม.) กรุณานำรถเข้าศูนย์บริการก่อนทำการจอง"
+                                    break
+
+                # --- ตรวจสอบเงื่อนไข ---
+                if is_mileage_blocked:
+                    st.error(f"❌ ไม่สามารถจองได้: {blocked_reason}")
+                elif not final_overlap.empty:
                     st.error("❌ ช้าไปนิด! มีคนตัดหน้าจองแล้ว")
                 elif check_start_dt >= check_end_dt:
                     st.error("❌ เวลาผิดพลาด")
@@ -955,7 +980,7 @@ try:
         st.caption(f"Time: {get_thai_time().strftime('%H:%M')}")
 
     if page == "🚗 จองรถ & อุปกรณ์":
-        page_car_booking(data["book"], data["stock"], data["users"], sh)
+        page_car_booking(data, sh)
     elif page == "🛠️ Admin & Stock":
         page_admin(data["book"], data["stock"], data["users"], sh)
     else:
