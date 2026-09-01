@@ -218,6 +218,26 @@ def status_label(percent):
     elif percent >= 0.75: return "🟠 ใกล้ถึงกำหนด"
     else: return "🟢 ปกติ"
 
+def get_overdue_cars(df_vehicles, df_mitems, threshold_km=2000):
+    """คืน dict {ชื่อรถ: จำนวนกม.ที่เกินกำหนด} เฉพาะรถที่เลยกำหนดเช็คระยะ (ตามระยะกม.) เกิน threshold_km
+    ใช้ชื่อรถ (Vehicles.Name) เทียบตรงกับชื่อรถที่ใช้ตอนจอง (CAR_SPECS) — ถ้าตั้งชื่อไม่ตรงกัน จะไม่ถูกจับคู่"""
+    overdue = {}
+    if df_vehicles is None or df_mitems is None or df_vehicles.empty or df_mitems.empty:
+        return overdue
+    for _, v in df_vehicles.iterrows():
+        items = df_mitems[df_mitems['VehicleID'] == v['ID']]
+        max_over = 0
+        for _, it in items.iterrows():
+            interval = it.get('IntervalKm', 0)
+            if interval and interval > 0:
+                used = v['CurrentMileage'] - (it.get('LastMileage') or 0)
+                over_km = used - interval
+                if over_km > max_over:
+                    max_over = over_km
+        if max_over > threshold_km:
+            overdue[v['Name']] = max_over
+    return overdue
+
 # --- HELPERS (Booking Calendar) ---
 _CAL_PALETTE = ["#7F77DD", "#1D9E75", "#D85A30", "#3B82F6", "#D4537E", "#F5A524", "#14B8A6", "#8B5CF6"]
 
@@ -226,7 +246,7 @@ def get_car_icon(car_name):
     car_str = str(car_name)
     if "Mu-X" in car_str: return "🚙"
     elif "D-max" in car_str: return "🛻"
-    elif "Geely" in car_str: return "⚡"
+    elif "Geele" in car_str: return "⚡"
     elif "Jazz" in car_str: return "🚗"
     elif "ยืมเฉพาะของ" in car_str or "ไม่ใช้รถ" in car_str: return "📦"
     elif "ส่วนตัว" in car_str: return "🚘"
@@ -498,7 +518,7 @@ def page_admin(df_book, df_stock, df_users, sh):
             st.rerun()
 
 # --- PAGE: CAR BOOKING ---
-def page_car_booking(df_book, df_stock, df_users, sh):
+def page_car_booking(df_book, df_stock, df_users, df_vehicles, df_mitems, sh):
     st.title("🚗 NavGo: จองรถและอุปกรณ์")
     st.caption(f"Time: {get_thai_time().strftime('%d/%m/%Y %H:%M')}")
 
@@ -514,7 +534,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
         "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 1500, "type": "company"},
         "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2200, "type": "company"},
-        "Geely Ex5": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
+        "Geele-1": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": {"max_seats": 99, "cargo_score": 9999, "type": "private"},
         "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": {"max_seats": 99, "cargo_score": 9999, "type": "no_car"}
     }
@@ -579,15 +599,22 @@ def page_car_booking(df_book, df_stock, df_users, sh):
 
             st.divider()
             st.subheader("3. เลือกพาหนะ")
+            overdue_cars = get_overdue_cars(df_vehicles, df_mitems, threshold_km=2000)
             valid_cars = []
             for c_name, specs in CAR_SPECS.items():
                 if specs['max_seats'] >= ppl:
                     limit = specs['cargo_score'] if "D-max" in c_name or specs['type'] != 'company' else (specs['cargo_score'] - (ppl*20))
                     if total_load <= limit:
                         if specs['type'] == 'company':
+                            if c_name in overdue_cars: continue  # เกินกำหนดเช็คระยะ >2,000 กม. ห้ามจอง
                             if c_name not in busy_cars_set: valid_cars.append(c_name)
                         else:
                             valid_cars.append(c_name)
+
+            relevant_overdue = {c: km for c, km in overdue_cars.items() if c in CAR_SPECS}
+            if relevant_overdue:
+                warn_lines = [f"🚫 **{c}** เกินกำหนดเช็คระยะแล้ว **{int(km):,} กม.** — งดให้จองจนกว่าจะนำเข้าเช็คระยะ" for c, km in relevant_overdue.items()]
+                st.warning("  \n".join(warn_lines))
 
             sel_car = st.selectbox("เลือก:", valid_cars if valid_cars else ["ไม่มีตัวเลือก"], key="new_car")
 
@@ -599,6 +626,8 @@ def page_car_booking(df_book, df_stock, df_users, sh):
 
                 if not final_overlap.empty:
                     st.error("❌ ช้าไปนิด! มีคนตัดหน้าจองแล้ว")
+                elif sel_car in overdue_cars:
+                    st.error(f"❌ {sel_car} เกินกำหนดเช็คระยะแล้ว {int(overdue_cars[sel_car]):,} กม. ไม่สามารถจองได้")
                 elif check_start_dt >= check_end_dt:
                     st.error("❌ เวลาผิดพลาด")
                 elif not task:
@@ -756,28 +785,74 @@ def page_car_maintenance(data, sh):
         if df_vehicles.empty:
             st.info("ยังไม่มีข้อมูลรถ (ไปเพิ่มที่แท็บ 'รถยนต์')")
         else:
+            # --- สรุปตัวเลขด้านบน ---
+            overdue_map = get_overdue_cars(df_vehicles, df_mitems, threshold_km=2000)
+            n_total = len(df_vehicles)
+            n_overdue = sum(
+                1 for _, v in df_vehicles.iterrows()
+                if any(compute_item_percent(it, v['CurrentMileage']) >= 1
+                       for _, it in df_mitems[df_mitems['VehicleID'] == v['ID']].iterrows())
+            )
+            n_near = sum(
+                1 for _, v in df_vehicles.iterrows()
+                if any(0.75 <= compute_item_percent(it, v['CurrentMileage']) < 1
+                       for _, it in df_mitems[df_mitems['VehicleID'] == v['ID']].iterrows())
+            )
+            n_ok = n_total - n_overdue - n_near
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("รถทั้งหมด", n_total)
+            m2.metric("🟢 ปกติ", n_ok)
+            m3.metric("🟠 ใกล้ถึงกำหนด", n_near)
+            m4.metric("🔴 ถึงกำหนด/เกินกำหนด", n_overdue)
+            st.write("")
+
             for _, v in df_vehicles.iterrows():
                 items = df_mitems[df_mitems['VehicleID'] == v['ID']]
-                st.markdown(f"**🚗 {v['Name']}** ({v['Plate']}) — เลขไมล์ปัจจุบัน: {int(v['CurrentMileage']):,} กม.")
-                if items.empty:
-                    st.caption("ไม่มีรายการบำรุงรักษา")
-                else:
-                    cols = st.columns(3)
-                    for i, (_, it) in enumerate(items.iterrows()):
-                        pct = compute_item_percent(it, v['CurrentMileage'])
-                        with cols[i % 3]:
-                            st.metric(label=it['Name'], value=status_label(pct), delta=f"{pct*100:.0f}%")
-                st.divider()
+                with st.container(border=True):
+                    head1, head2 = st.columns([3, 1])
+                    with head1:
+                        st.markdown(f"**🚗 {v['Name']}**  <span style='color:#8A8F98;font-size:13px;'>({v['Plate']})</span>", unsafe_allow_html=True)
+                        st.caption(f"เลขไมล์ปัจจุบัน: {int(v['CurrentMileage']):,} กม.")
+                    with head2:
+                        worst_pct = max([compute_item_percent(it, v['CurrentMileage']) for _, it in items.iterrows()], default=0)
+                        st.markdown(f"<div style='text-align:right;font-size:14px;font-weight:600;padding-top:6px;'>{status_label(worst_pct)}</div>", unsafe_allow_html=True)
 
+                    if v['Name'] in overdue_map:
+                        st.error(f"🚫 เกินกำหนดเช็คระยะแล้ว {int(overdue_map[v['Name']]):,} กม. — ระบบจะไม่ให้จองรถคันนี้จนกว่าจะเข้าเช็คระยะ")
+
+                    if items.empty:
+                        st.caption("ไม่มีรายการบำรุงรักษา")
+                    else:
+                        for _, it in items.iterrows():
+                            pct = compute_item_percent(it, v['CurrentMileage'])
+                            capped = min(max(pct, 0), 1.0)
+                            bar_color = "#E24B4A" if pct >= 1 else ("#F5A524" if pct >= 0.75 else "#1D9E75")
+                            ic1, ic2 = st.columns([4, 1])
+                            with ic1:
+                                st.markdown(f"<div style='font-size:13px;margin-bottom:2px;'>{it['Name']}</div>"
+                                            f"<div style='background:rgba(128,128,128,0.18);border-radius:6px;height:8px;overflow:hidden;'>"
+                                            f"<div style='width:{capped*100:.0f}%;background:{bar_color};height:100%;'></div></div>",
+                                            unsafe_allow_html=True)
+                            with ic2:
+                                st.markdown(f"<div style='text-align:right;font-size:13px;font-weight:700;color:{bar_color};'>{pct*100:.0f}%</div>", unsafe_allow_html=True)
+
+        st.divider()
         st.subheader("สถานะอุปกรณ์แบต")
         if df_devices.empty:
             st.info("ยังไม่มีข้อมูลอุปกรณ์")
         else:
-            cols = st.columns(4)
+            d_cols = st.columns(3)
             for i, (_, d) in enumerate(df_devices.iterrows()):
                 pct = compute_device_percent(d)
-                with cols[i % 4]:
-                    st.metric(label=d['Name'], value=status_label(pct))
+                capped = min(max(pct, 0), 1.0)
+                bar_color = "#E24B4A" if pct >= 1 else ("#F5A524" if pct >= 0.75 else "#1D9E75")
+                with d_cols[i % 3]:
+                    with st.container(border=True):
+                        st.markdown(f"**🔋 {d['Name']}**")
+                        st.markdown(f"<div style='background:rgba(128,128,128,0.18);border-radius:6px;height:8px;overflow:hidden;'>"
+                                    f"<div style='width:{capped*100:.0f}%;background:{bar_color};height:100%;'></div></div>",
+                                    unsafe_allow_html=True)
+                        st.caption(status_label(pct))
 
     # --- TAB 2: VEHICLES ---
     with tab2:
@@ -972,7 +1047,7 @@ try:
         st.caption(f"Time: {get_thai_time().strftime('%H:%M')}")
 
     if page == "🚗 จองรถ & อุปกรณ์":
-        page_car_booking(data["book"], data["stock"], data["users"], sh)
+        page_car_booking(data["book"], data["stock"], data["users"], data["vehicles"], data["mitems"], sh)
     elif page == "🛠️ Admin & Stock":
         page_admin(data["book"], data["stock"], data["users"], sh)
     else:
