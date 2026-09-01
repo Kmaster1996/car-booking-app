@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, date
-import calendar as cal_mod
+import calendar
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
 import requests
 import uuid
-from streamlit_calendar import calendar
 
 # --- CONFIG & SETUP ---
 st.set_page_config(page_title="NavGo System V9 (All-in-One)", layout="wide", initial_sidebar_state="expanded")
@@ -25,7 +24,7 @@ def get_client():
 
 @st.cache_resource
 def get_spreadsheet():
-    """เปิดไฟล์ Google Sheets ครั้งเดียวแล้ว cache ไว้"""
+    """เปิดไฟล์ Google Sheets ครั้งเดียวแล้ว cache ไว้ (ไม่ใช่ data ที่เปลี่ยนบ่อย จึงไม่ต้องเปิดใหม่ทุก rerun)"""
     client = get_client()
     try:
         return client.open("CarBookingDB")
@@ -51,11 +50,13 @@ def send_telegram_notify(msg):
         pass
 
 # ============================================================
-# LOAD DATA — NavGo (จองรถ) + Car Maintenance
+# LOAD DATA — NavGo (จองรถ) + Car Maintenance (เช็คระยะ/แบต)
+# เก็บทุกอย่างไว้ใน Google Sheet เดียวกัน (CarBookingDB)
 # ============================================================
 @st.cache_data(ttl=30, show_spinner=False)
 def load_data():
     sh = get_spreadsheet()
+
     existing_sheets = [ws.title for ws in sh.worksheets()]
 
     def get_or_create(name, headers, rows=200, cols=10):
@@ -98,7 +99,7 @@ def load_data():
         ws_users.append_row(["Admin", "IT"])
         df_users = pd.DataFrame([{"Name": "Admin", "Department": "IT"}])
 
-    # 4. Vehicles
+    # 4. Vehicles (Car Maintenance)
     df_vehicles = get_or_create("Vehicles", ["ID", "Name", "Plate", "CurrentMileage"])
     if not df_vehicles.empty:
         df_vehicles['CurrentMileage'] = pd.to_numeric(df_vehicles['CurrentMileage'], errors='coerce').fillna(0)
@@ -114,7 +115,7 @@ def load_data():
     # 6. Mileage Logs
     df_mlogs = get_or_create("MileageLogs", ["ID", "VehicleID", "OldMileage", "NewMileage", "UpdatedBy", "CreatedAt"])
 
-    # 7. Devices
+    # 7. Devices (Battery tracker)
     df_devices = get_or_create("Devices", ["ID", "Name", "IntervalDays", "LastChargedDate", "Notes", "SerialNumber"])
     if not df_devices.empty:
         df_devices['IntervalDays'] = pd.to_numeric(df_devices['IntervalDays'], errors='coerce').fillna(0)
@@ -150,6 +151,7 @@ def save_users(sh, df):
     ws.update([df.columns.values.tolist()] + df.values.tolist())
 
 def _json_safe_cell(v):
+    """แปลงค่าที่ JSON ส่งให้ Google Sheets ไม่ได้ (Timestamp/datetime/date/NaN) ให้เป็น string หรือค่าว่าง"""
     if isinstance(v, (pd.Timestamp, datetime, date)):
         return "" if pd.isna(v) else v.strftime('%Y-%m-%d')
     if isinstance(v, float) and pd.isna(v):
@@ -157,6 +159,10 @@ def _json_safe_cell(v):
     return v
 
 def save_sheet(sh, sheet_name, df):
+    """ใช้บันทึกชีตของ Car Maintenance (Vehicles/MaintItems/Devices/Logs)
+    เช็คและแปลงค่าทีละเซลล์ (ไม่ใช่ทั้งคอลัมน์) เพราะคอลัมน์วันที่อาจมีทั้ง
+    Timestamp (จากแถวเก่าที่โหลดมา) และ string (จากแถวใหม่ที่เพิ่งเพิ่ม) ปนกันอยู่
+    ถ้าเช็คแค่ dtype ของทั้งคอลัมน์ จะพลาดแปลง Timestamp ที่หลงเหลืออยู่ จนส่งเป็น JSON ไม่ได้"""
     ws = sh.worksheet(sheet_name)
     export_df = df.copy()
     for col in export_df.columns:
@@ -212,21 +218,25 @@ def status_label(percent):
     elif percent >= 0.75: return "🟠 ใกล้ถึงกำหนด"
     else: return "🟢 ปกติ"
 
-# --- HELPERS (Icon Mapping) ---
+# --- HELPERS (Booking Calendar) ---
+_CAL_COLOR_EMOJIS = ["🟪", "🟩", "🟧", "🟥", "🟦", "🟨"]
+
 def get_car_icon(car_name):
-    """ส่งคืนไอคอนตามประเภทรถที่กำหนด"""
-    car_str = str(car_name).strip()
-    if "Mu-X" in car_str:
-        return "🚙"  # SUV 7 ที่นั่ง
-    elif "D-max" in car_str:
-        return "🛻"  # รถกระบะ 4 ประตู
-    elif "Geele" in car_str:
-        return "⚡"  # รถไฟฟ้า EV
-    elif "Jazz" in car_str:
-        return "🚗"  # รถเก๋ง
-    elif "ยืมเฉพาะของ" in car_str or "ไม่ใช้รถ" in car_str:
-        return "📦"  # ยืมเฉพาะของ
-    return "🚘"
+    """ไอคอนตามประเภทรถ ช่วยให้เห็นปุ๊บรู้เลยว่าเป็นรถอะไรโดยไม่ต้องอ่านชื่อเต็ม"""
+    car_str = str(car_name)
+    if "Mu-X" in car_str: return "🚙"
+    elif "D-max" in car_str: return "🛻"
+    elif "Geele" in car_str: return "⚡"
+    elif "Jazz" in car_str: return "🚗"
+    elif "ยืมเฉพาะของ" in car_str or "ไม่ใช้รถ" in car_str: return "📦"
+    elif "ส่วนตัว" in car_str: return "🚘"
+    return "🚗"
+
+def user_color_emoji(user):
+    """แจกสีให้แต่ละคนแบบคงที่ (ไม่ใช้ hash() เพราะสุ่มใหม่ทุกครั้งที่รีสตาร์ทแอป)"""
+    s = str(user)
+    val = sum(ord(c) for c in s)
+    return _CAL_COLOR_EMOJIS[val % len(_CAL_COLOR_EMOJIS)]
 
 @st.dialog("รายละเอียดการจอง")
 def show_booking_detail(row):
@@ -241,45 +251,22 @@ def show_booking_detail(row):
         st.session_state.pop('cal_selected_idx', None)
         st.rerun()
 
-def render_booking_calendar(df_book, car_options=None, **kwargs):
+def render_booking_calendar(df_book, car_options=None):
+    """ปฏิทินรายเดือนแบบ Google Calendar สำหรับดูรายการจองทั้งหมด"""
     if 'cal_year' not in st.session_state:
-        now = get_thai_time() if 'get_thai_time' in globals() else datetime.now()
+        now = get_thai_time()
         st.session_state['cal_year'] = now.year
         st.session_state['cal_month'] = now.month
 
-    # --- 1. FILTER SECTION (กรองข้อมูล) ---
-    st.markdown("##### 🔍 กรองการค้นหา")
-    show_equipment_only = st.checkbox("📦 แสดงเฉพาะรายการยืมของ (ซ่อนการจองรถ)", key="cal_filter_equip")
-    
-    if car_options:
-        cols = st.columns(len(car_options) + 1)
-        all_selected = cols[0].checkbox("ทั้งหมด", value=True, key="cal_car_all")
-        selected_cars = []
-        for idx, car in enumerate(car_options):
-            val = cols[idx + 1].checkbox(f"🚗 {car}", value=all_selected, key=f"cal_car_{idx}")
-            if val or all_selected:
-                selected_cars.append(car)
-    else:
-        selected_cars = None
-
-    # กรอง Dataframe
-    df_filtered = df_book.copy()
-    if not df_filtered.empty:
-        if show_equipment_only:
-            df_filtered = df_filtered[df_filtered['Car'].str.contains('ไม่ใช้รถ|ยืมเฉพาะของ', na=False)]
-        elif selected_cars is not None:
-            df_filtered = df_filtered[df_filtered['Car'].isin(selected_cars)]
-
-    # --- 2. NAVIGATION (เลื่อนเดือน) ---
-    nav1, nav2, nav3 = st.columns([1, 2, 1])
+    nav1, nav2, nav3 = st.columns([1, 3, 1])
     with nav1:
-        if st.button("← เดือนก่อน", use_container_width=True, key="btn_prev_m"):
+        if st.button("← เดือนก่อน", use_container_width=True):
             m, y = st.session_state['cal_month'] - 1, st.session_state['cal_year']
             if m < 1: m, y = 12, y - 1
             st.session_state['cal_month'], st.session_state['cal_year'] = m, y
             st.rerun()
     with nav3:
-        if st.button("เดือนถัดไป →", use_container_width=True, key="btn_next_m"):
+        if st.button("เดือนถัดไป →", use_container_width=True):
             m, y = st.session_state['cal_month'] + 1, st.session_state['cal_year']
             if m > 12: m, y = 1, y + 1
             st.session_state['cal_month'], st.session_state['cal_year'] = m, y
@@ -289,73 +276,113 @@ def render_booking_calendar(df_book, car_options=None, **kwargs):
     thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
                    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
     with nav2:
-        st.markdown(f"<h3 style='text-align:center;'>{thai_months[month]} {year + 543}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<div style='text-align:center;font-weight:600;padding-top:6px;'>{thai_months[month]} {year + 543}</div>", unsafe_allow_html=True)
 
-    # --- 3. CALENDAR GRID WITH INTERACTIVE BUTTONS ---
+    # --- Checkbox Filter รถ ---
+    if car_options:
+        # ย่อชื่อยาวๆ ให้เหลือสั้นแค่บน checkbox แต่ยังกรองด้วยชื่อเต็มเดิม
+        short_label = {
+            "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "🚙 รถส่วนตัว",
+            "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ไม่ใช้รถ (ไม่ยืมรถ)",
+        }
+        if 'cal_car_checks' not in st.session_state:
+            st.session_state['cal_car_checks'] = {c: True for c in car_options}
+        else:
+            for c in car_options:
+                st.session_state['cal_car_checks'].setdefault(c, True)
+
+        f_cols = st.columns(len(car_options))
+        for col, c in zip(f_cols, car_options):
+            with col:
+                st.session_state['cal_car_checks'][c] = st.checkbox(
+                    short_label.get(c, c),
+                    value=st.session_state['cal_car_checks'][c],
+                    key=f"cal_chk_{c}",
+                )
+        st.caption("💡 ติ๊กออกที่ \"📦 ไม่ใช้รถ\" เพื่อดูเฉพาะรายการที่ยืมรถจริง")
+        st.write("")
+
+    checked_cars = {c for c, v in st.session_state.get('cal_car_checks', {}).items() if v} if car_options else None
+
+    days_in_month = calendar.monthrange(year, month)[1]
+    first_weekday = (date(year, month, 1).weekday() + 1) % 7  # ให้อาทิตย์ = 0
+    cells = [None] * first_weekday + list(range(1, days_in_month + 1))
+    while len(cells) % 7 != 0:
+        cells.append(None)
+    weeks = [cells[i:i + 7] for i in range(0, len(cells), 7)]
+
     weekday_names = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"]
     hcols = st.columns(7)
     for c, name in zip(hcols, weekday_names):
-        c.markdown(f"<div style='text-align:center;font-weight:bold;padding:6px;background-color:#2d3748;color:#fff;border-radius:4px;'>{name}</div>", unsafe_allow_html=True)
+        c.markdown(f"<div style='text-align:center;font-size:12px;color:gray;'>{name}</div>", unsafe_allow_html=True)
 
-    days_in_month = cal_mod.monthrange(year, month)[1]
-    first_weekday = (date(year, month, 1).weekday() + 1) % 7 # 0 = Sunday
-    cells = [None] * first_weekday + list(range(1, days_in_month + 1))
-    while len(cells) % 7 != 0: cells.append(None)
-    weeks = [cells[i:i + 7] for i in range(0, len(cells), 7)]
+    df_valid = df_book.dropna(subset=['Start_Time', 'End_Time']) if not df_book.empty else df_book
+    if checked_cars is not None and not df_valid.empty:
+        df_valid = df_valid[df_valid['Car'].isin(checked_cars)]
 
-    # วาดปฏิทินด้วย Native Streamlit Elements
-    for week_idx, week in enumerate(weeks):
-        cols = st.columns(7)
-        for day_idx, d in enumerate(week):
-            with cols[day_idx]:
-                if d is not None:
-                    with st.container(border=True):
-                        st.markdown(f"<div style='text-align:center;font-weight:bold;font-size:12px;color:#a0aec0;'>{d}</div>", unsafe_allow_html=True)
-                        curr_date = date(year, month, d)
-                        
-                        if not df_filtered.empty:
-                            day_events = df_filtered[
-                                (pd.to_datetime(df_filtered['Start_Time']).dt.date <= curr_date) & 
-                                (pd.to_datetime(df_filtered['End_Time']).dt.date >= curr_date)
-                            ]
-                            
-                            for idx, row in day_events.iterrows():
-                                start_d = pd.to_datetime(row['Start_Time']).date()
-                                car_name = str(row.get('Car', ''))
-                                icon = get_car_icon(car_name) if 'get_car_icon' in globals() else "🚗"
-                                
-                                # ปรับ Label ตัวหนังสือให้อยู่ตรงกลาง
-                                if curr_date == start_d or d == 1 or curr_date.weekday() == 6:
-                                    btn_label = f"{icon} {row.get('User', '')}"
-                                else:
-                                    btn_label = f"↔ {icon}"
-                                
-                                # ปุ่มกดตอบสนอง (Interactive Button)
-                                if st.button(btn_label, key=f"btn_{year}_{month}_{d}_{idx}", use_container_width=True, help=f"{row.get('User')}: {row.get('Task')}"):
-                                    st.session_state['cal_selected_row'] = row.to_dict()
-                else:
-                    st.write("")
+    for w_idx, week in enumerate(weeks):
+        if all(d is None for d in week):
+            continue
 
-    # --- 4. POPUP / SHOW DETAILS (ส่วนแสดงรายละเอียดเมื่อกดเลือก) ---
-    if 'cal_selected_row' in st.session_state and st.session_state['cal_selected_row']:
-        sel = st.session_state['cal_selected_row']
-        st.write("---")
-        with st.container(border=True):
-            col_head, col_close = st.columns([0.9, 0.1])
-            with col_head:
-                st.subheader(f"📌 รายละเอียดการจอง: {sel.get('User', '-')}")
-            with col_close:
-                if st.button("❌", key="close_detail"):
-                    st.session_state['cal_selected_row'] = None
-                    st.rerun()
+        dcols = st.columns(7)
+        for c, d in zip(dcols, week):
+            c.markdown(f"<div style='font-size:13px;padding:2px 4px;'>{d if d else ''}</div>", unsafe_allow_html=True)
 
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.write(f"🚗 **รถ/อุปกรณ์:** {sel.get('Car', '-')}")
-                st.write(f"📝 **ชื่องาน:** {sel.get('Task', '-')}")
-            with col_b:
-                st.write(f"📍 **สถานที่:** {sel.get('Location', '-')}")
-                st.write(f"📦 **อุปกรณ์เพิ่มเติม:** {sel.get('Equipment', '-')}")
+        placed, lanes = [], []
+        if not df_valid.empty:
+            for idx, row in df_valid.iterrows():
+                ev_start, ev_end = row['Start_Time'].date(), row['End_Time'].date()
+                col_start = col_end = None
+                for i, d in enumerate(week):
+                    if d is None: continue
+                    wd = date(year, month, d)
+                    if ev_start <= wd <= ev_end:
+                        if col_start is None: col_start = i
+                        col_end = i
+                if col_start is None: continue
+
+                lane = 0
+                def overlaps(seg, cs=col_start, ce=col_end):
+                    return not (ce < seg[0] or cs > seg[1])
+                while lane < len(lanes) and any(overlaps(seg) for seg in lanes[lane]):
+                    lane += 1
+                if lane == len(lanes): lanes.append([])
+                lanes[lane].append((col_start, col_end))
+                placed.append({'colStart': col_start, 'colEnd': col_end, 'lane': lane, 'row': row, 'idx': idx})
+
+        max_lane = max([p['lane'] for p in placed], default=-1)
+        for lane_i in range(max_lane + 1):
+            lane_events = sorted([p for p in placed if p['lane'] == lane_i], key=lambda x: x['colStart'])
+            widths, slots, cursor = [], [], 0
+            for ev in lane_events:
+                gap = ev['colStart'] - cursor
+                if gap > 0:
+                    widths.append(gap); slots.append(None)
+                widths.append(ev['colEnd'] - ev['colStart'] + 1); slots.append(ev)
+                cursor = ev['colEnd'] + 1
+            if cursor < 7:
+                widths.append(7 - cursor); slots.append(None)
+
+            lane_cols = st.columns(widths)
+            for col, slot in zip(lane_cols, slots):
+                with col:
+                    if slot is None:
+                        st.write("")
+                    else:
+                        row = slot['row']
+                        label = f"{user_color_emoji(row['User'])}{get_car_icon(row['Car'])} {row['User']}: {row['Task']}"
+                        if len(label) > 26: label = label[:24] + "…"
+                        if st.button(label, key=f"cal_ev_{w_idx}_{lane_i}_{slot['idx']}", use_container_width=True):
+                            st.session_state['cal_selected_idx'] = slot['idx']
+                            st.rerun()
+        st.markdown("<div style='border-bottom:1px solid rgba(128,128,128,0.2);margin:2px 0 8px;'></div>", unsafe_allow_html=True)
+
+    if 'cal_selected_idx' in st.session_state:
+        sel_idx = st.session_state['cal_selected_idx']
+        if sel_idx in df_book.index:
+            show_booking_detail(df_book.loc[sel_idx])
+        else:
+            st.session_state.pop('cal_selected_idx', None)
 
 # --- PAGE: ADMIN & INVENTORY ---
 def page_admin(df_book, df_stock, df_users, sh):
@@ -435,13 +462,7 @@ def page_admin(df_book, df_stock, df_users, sh):
             st.rerun()
 
 # --- PAGE: CAR BOOKING ---
-def page_car_booking(data, sh):
-    df_book = data["book"]
-    df_stock = data["stock"]
-    df_users = data["users"]
-    df_vehicles = data["vehicles"]
-    df_mitems = data["mitems"]
-
+def page_car_booking(df_book, df_stock, df_users, sh):
     st.title("🚗 NavGo: จองรถและอุปกรณ์")
     st.caption(f"Time: {get_thai_time().strftime('%d/%m/%Y %H:%M')}")
 
@@ -458,6 +479,7 @@ def page_car_booking(data, sh):
         "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2200, "type": "company"},
         "Geele-1": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
+        "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": {"max_seats": 99, "cargo_score": 9999, "type": "private"},
         "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": {"max_seats": 99, "cargo_score": 9999, "type": "no_car"}
     }
 
@@ -539,35 +561,7 @@ def page_car_booking(data, sh):
                 if specs.get('type') == 'company':
                     final_overlap = df_book[(df_book['Start_Time'] < check_end_dt) & (df_book['End_Time'] > check_start_dt) & (df_book['Car'] == sel_car)]
 
-                # --- [LOGIC เพิ่มเติม] เช็คการล็อกจองรถถ้าระยะทางเกินกำหนด +2,000 กม. ---
-                is_mileage_blocked = False
-                blocked_reason = ""
-                
-                if specs.get('type') == 'company':
-                    v_match = df_vehicles[df_vehicles['Name'].str.strip() == sel_car.strip()]
-                    if not v_match.empty:
-                        v_row = v_match.iloc[0]
-                        v_id = v_row['ID']
-                        curr_mileage = float(v_row['CurrentMileage'])
-                        
-                        # ค้นหา MaintItems ของรถคันนี้
-                        v_items = df_mitems[df_mitems['VehicleID'] == v_id]
-                        for _, item in v_items.iterrows():
-                            interval_km = float(item['IntervalKm'])
-                            last_mileage = float(item['LastMileage'])
-                            
-                            if interval_km > 0:
-                                max_allowed_km = last_mileage + interval_km + 2000  # ยอมให้เกินได้ไม่เกิน 2,000 กม.
-                                if curr_mileage > max_allowed_km:
-                                    is_mileage_blocked = True
-                                    over_km = curr_mileage - (last_mileage + interval_km)
-                                    blocked_reason = f"รถคันนี้เกินกำหนดเช็คระยะ ({item['Name']}) มาแล้ว {int(over_km):,} กม. (อนุญาตให้เกินได้ไม่เกิน 2,000 กม.) กรุณานำรถเข้าศูนย์บริการก่อนทำการจอง"
-                                    break
-
-                # --- ตรวจสอบเงื่อนไข ---
-                if is_mileage_blocked:
-                    st.error(f"❌ ไม่สามารถจองได้: {blocked_reason}")
-                elif not final_overlap.empty:
+                if not final_overlap.empty:
                     st.error("❌ ช้าไปนิด! มีคนตัดหน้าจองแล้ว")
                 elif check_start_dt >= check_end_dt:
                     st.error("❌ เวลาผิดพลาด")
@@ -721,67 +715,33 @@ def page_car_maintenance(data, sh):
     tab1, tab2, tab3, tab4 = st.tabs(["📊 ภาพรวม", "🚗 รถยนต์", "🔋 อุปกรณ์แบต", "📜 ประวัติ"])
 
     # --- TAB 1: DASHBOARD ---
-    # --- TAB 1: DASHBOARD (UI Redesign) ---
     with tab1:
-        st.subheader("🚗 ภาพรวมสถานะรถยนต์")
+        st.subheader("สถานะรถยนต์")
         if df_vehicles.empty:
-            st.info("ยังไม่มีข้อมูลรถในระบบ")
+            st.info("ยังไม่มีข้อมูลรถ (ไปเพิ่มที่แท็บ 'รถยนต์')")
         else:
-            # แบ่งการแสดงผลรถยนต์ออกเป็น Grid (2 คอลัมน์ต่อแถว) เพื่อความสบายตา
-            v_cols = st.columns(2)
-            for idx, (_, v) in enumerate(df_vehicles.iterrows()):
+            for _, v in df_vehicles.iterrows():
                 items = df_mitems[df_mitems['VehicleID'] == v['ID']]
-                
-                with v_cols[idx % 2]:
-                    with st.container(border=True):
-                        # Header ของ Card รถยนต์
-                        car_icon = get_car_icon(v['Name'])
-                        st.markdown(f"### {car_icon} {v['Name']}")
-                        st.caption(f"🆔 **ทะเบียน:** {v['Plate'] or '-'} | 🛣️ **เลขไมล์:** {int(v['CurrentMileage']):,} กม.")
-                        st.divider()
+                st.markdown(f"**🚗 {v['Name']}** ({v['Plate']}) — เลขไมล์ปัจจุบัน: {int(v['CurrentMileage']):,} กม.")
+                if items.empty:
+                    st.caption("ไม่มีรายการบำรุงรักษา")
+                else:
+                    cols = st.columns(3)
+                    for i, (_, it) in enumerate(items.iterrows()):
+                        pct = compute_item_percent(it, v['CurrentMileage'])
+                        with cols[i % 3]:
+                            st.metric(label=it['Name'], value=status_label(pct), delta=f"{pct*100:.0f}%")
+                st.divider()
 
-                        if items.empty:
-                            st.caption("🟢 สภาพปกติ (ไม่มีรายการบำรุงรักษาที่ตั้งไว้)")
-                        else:
-                            for _, it in items.iterrows():
-                                pct = compute_item_percent(it, v['CurrentMileage'])
-                                pct_display = min(pct, 1.0) # สำหรับ Progress Bar
-                                
-                                # กำหนดสีและ Badge
-                                if pct >= 1.0:
-                                    status_badge = f":red[🔴 ถึงกำหนดแล้ว ({int(pct*100)}%)]"
-                                elif pct >= 0.75:
-                                    status_badge = f":orange[🟠 ใกล้ถึงกำหนด ({int(pct*100)}%)]"
-                                else:
-                                    status_badge = f":green[🟢 ปกติ ({int(pct*100)}%)]"
-
-                                st.markdown(f"**{it['Name']}** — {status_badge}")
-                                st.progress(pct_display)
-
-        st.divider()
-        st.subheader("🔋 ภาพรวมอุปกรณ์แบตเตอรี่")
+        st.subheader("สถานะอุปกรณ์แบต")
         if df_devices.empty:
             st.info("ยังไม่มีข้อมูลอุปกรณ์")
         else:
-            d_cols = st.columns(3)
-            for idx, (_, d) in enumerate(df_devices.iterrows()):
+            cols = st.columns(4)
+            for i, (_, d) in enumerate(df_devices.iterrows()):
                 pct = compute_device_percent(d)
-                pct_display = min(pct, 1.0)
-                
-                with d_cols[idx % 3]:
-                    with st.container(border=True):
-                        st.markdown(f"**📦 {d['Name']}**")
-                        last_c = d['LastChargedDate'].strftime('%d/%m/%Y') if pd.notna(d['LastChargedDate']) else "ยังไม่เคยชาร์จ"
-                        st.caption(f"ชาร์จล่าสุด: {last_c}")
-                        
-                        if pct >= 1.0:
-                            st.markdown(":red[🔴 ต้องชาร์จแบตเตอรี่]")
-                        elif pct >= 0.75:
-                            st.markdown(":orange[🟠 ใกล้ครบกำหนดชาร์จ]")
-                        else:
-                            st.markdown(":green[🟢 แบตเตอรี่พร้อมใช้งาน]")
-                            
-                        st.progress(pct_display)
+                with cols[i % 4]:
+                    st.metric(label=d['Name'], value=status_label(pct))
 
     # --- TAB 2: VEHICLES ---
     with tab2:
@@ -976,7 +936,7 @@ try:
         st.caption(f"Time: {get_thai_time().strftime('%H:%M')}")
 
     if page == "🚗 จองรถ & อุปกรณ์":
-        page_car_booking(data, sh)
+        page_car_booking(data["book"], data["stock"], data["users"], sh)
     elif page == "🛠️ Admin & Stock":
         page_admin(data["book"], data["stock"], data["users"], sh)
     else:
