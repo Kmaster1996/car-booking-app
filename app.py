@@ -219,7 +219,7 @@ def get_car_icon(car_name):
         return "🚙"  # SUV 7 ที่นั่ง
     elif "D-max" in car_str:
         return "🛻"  # รถกระบะ 4 ประตู
-    elif "Geele" in car_str:
+    elif "Geely" in car_str:
         return "⚡"  # รถไฟฟ้า EV
     elif "Jazz" in car_str:
         return "🚗"  # รถเก๋ง
@@ -281,7 +281,7 @@ def render_booking_calendar(df_book, car_options=None):
             "Honda Jazz 2019": "🚗 Honda Jazz",
             "Isuzu Mu-X": "🚙 Isuzu Mu-X",
             "Isuzu D-max 4 Doors": "🛻 Isuzu D-max",
-            "Geele-1": "⚡ Geele-1",
+            "Geely EX5": "⚡ Geely Ex5",
             "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ยืมเฉพาะของ",
         }
 
@@ -495,7 +495,7 @@ def page_car_booking(data, sh):
         "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 1500, "type": "company"},
         "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2200, "type": "company"},
-        "Geele-1": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
+        "Geely EX5": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": {"max_seats": 99, "cargo_score": 9999, "type": "no_car"}
     }
 
