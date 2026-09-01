@@ -24,7 +24,7 @@ def get_client():
 
 @st.cache_resource
 def get_spreadsheet():
-    """เปิดไฟล์ Google Sheets ครั้งเดียวแล้ว cache ไว้ (ไม่ใช่ data ที่เปลี่ยนบ่อย จึงไม่ต้องเปิดใหม่ทุก rerun)"""
+    """เปิดไฟล์ Google Sheets ครั้งเดียวแล้ว cache ไว้"""
     client = get_client()
     try:
         return client.open("CarBookingDB")
@@ -50,13 +50,11 @@ def send_telegram_notify(msg):
         pass
 
 # ============================================================
-# LOAD DATA — NavGo (จองรถ) + Car Maintenance (เช็คระยะ/แบต)
-# เก็บทุกอย่างไว้ใน Google Sheet เดียวกัน (CarBookingDB)
+# LOAD DATA — NavGo (จองรถ) + Car Maintenance
 # ============================================================
 @st.cache_data(ttl=30, show_spinner=False)
 def load_data():
     sh = get_spreadsheet()
-
     existing_sheets = [ws.title for ws in sh.worksheets()]
 
     def get_or_create(name, headers, rows=200, cols=10):
@@ -99,7 +97,7 @@ def load_data():
         ws_users.append_row(["Admin", "IT"])
         df_users = pd.DataFrame([{"Name": "Admin", "Department": "IT"}])
 
-    # 4. Vehicles (Car Maintenance)
+    # 4. Vehicles
     df_vehicles = get_or_create("Vehicles", ["ID", "Name", "Plate", "CurrentMileage"])
     if not df_vehicles.empty:
         df_vehicles['CurrentMileage'] = pd.to_numeric(df_vehicles['CurrentMileage'], errors='coerce').fillna(0)
@@ -115,7 +113,7 @@ def load_data():
     # 6. Mileage Logs
     df_mlogs = get_or_create("MileageLogs", ["ID", "VehicleID", "OldMileage", "NewMileage", "UpdatedBy", "CreatedAt"])
 
-    # 7. Devices (Battery tracker)
+    # 7. Devices
     df_devices = get_or_create("Devices", ["ID", "Name", "IntervalDays", "LastChargedDate", "Notes", "SerialNumber"])
     if not df_devices.empty:
         df_devices['IntervalDays'] = pd.to_numeric(df_devices['IntervalDays'], errors='coerce').fillna(0)
@@ -213,13 +211,21 @@ def status_label(percent):
     elif percent >= 0.75: return "🟠 ใกล้ถึงกำหนด"
     else: return "🟢 ปกติ"
 
-# --- HELPERS (Booking Calendar) ---
-_CAL_COLOR_EMOJIS = ["🟪", "🟩", "🟧", "🟥", "🟦", "🟨"]
-
-def user_color_emoji(user):
-    s = str(user)
-    val = sum(ord(c) for c in s)
-    return _CAL_COLOR_EMOJIS[val % len(_CAL_COLOR_EMOJIS)]
+# --- HELPERS (Icon Mapping) ---
+def get_car_icon(car_name):
+    """ส่งคืนไอคอนตามประเภทรถที่กำหนด"""
+    car_str = str(car_name).strip()
+    if "Mu-X" in car_str:
+        return "🚙"  # SUV 7 ที่นั่ง
+    elif "D-max" in car_str:
+        return "🛻"  # รถกระบะ 4 ประตู
+    elif "Geele" in car_str:
+        return "⚡"  # รถไฟฟ้า EV
+    elif "Jazz" in car_str:
+        return "🚗"  # รถเก๋ง
+    elif "ยืมเฉพาะของ" in car_str or "ไม่ใช้รถ" in car_str:
+        return "📦"  # ยืมเฉพาะของ
+    return "🚘"
 
 @st.dialog("รายละเอียดการจอง")
 def show_booking_detail(row):
@@ -235,7 +241,7 @@ def show_booking_detail(row):
         st.rerun()
 
 def render_booking_calendar(df_book, car_options=None):
-    """ปฏิทินรายเดือนแบบ Google Calendar สำหรับดูรายการจองทั้งหมด"""
+    """ปฏิทินรายเดือนแบบ Google Calendar พร้อมตัวกรองไอคอนรถแบบใหม่"""
     if 'cal_year' not in st.session_state:
         now = get_thai_time()
         st.session_state['cal_year'] = now.year
@@ -263,18 +269,24 @@ def render_booking_calendar(df_book, car_options=None):
     with nav2:
         st.markdown(f"<div style='text-align:center;font-weight:600;padding-top:6px;'>{thai_months[month]} {year + 543}</div>", unsafe_allow_html=True)
 
-    # --- Checkbox Filter รถ ---
+    # --- Checkbox Switch สำหรับสลับโหมดการดู ยืมของ / ยืมรถ ---
+    show_only_equip = st.checkbox("📦 แสดงเฉพาะรายการยืมของ (ซ่อนการจองรถ)", value=False, key="cal_show_only_equip")
+
     if car_options:
-        # Checkbox เปิด-ปิดสำหรับกรณีไม่ยืมรถ
-        hide_no_car = st.checkbox("🚫 ไม่แสดงรายการยืมเฉพาะของ (ซ่อน 'ไม่ใช้รถ')", value=False, key="cal_hide_no_car")
+        # กรองตัวเลือกแถบปุ่มกดด้านบน
+        if show_only_equip:
+            available_options = ["📦 ไม่ใช้รถ (ยืมเฉพาะของ)"]
+        else:
+            available_options = [c for c in car_options if c != "📦 ไม่ใช้รถ (ยืมเฉพาะของ)"]
 
         short_label = {
-            "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "🚙 รถส่วนตัว",
-            "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ไม่ใช้รถ",
+            "Honda Jazz 2019": "🚗 Honda Jazz",
+            "Isuzu Mu-X": "🚙 Isuzu Mu-X",
+            "Isuzu D-max 4 Doors": "🛻 Isuzu D-max",
+            "Geele-1": "⚡ Geele-1",
+            "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ยืมเฉพาะของ",
         }
 
-        # กรองรายการตัวเลือก
-        available_options = [c for c in car_options if not (hide_no_car and c == "📦 ไม่ใช้รถ (ยืมเฉพาะของ)")]
         filter_items = [("ทั้งหมด", "ทั้งหมด")] + [(short_label.get(c, c), c) for c in available_options]
 
         st.caption("เลือกกรองคันที่ต้องการดู:")
@@ -290,8 +302,8 @@ def render_booking_calendar(df_book, car_options=None):
                     st.session_state['cal_car_filter'] = value
                     st.rerun()
 
-        # หากเคยเลือก "ไม่ใช้รถ" แล้วไปกดสวิตช์ซ่อน ให้เด้งกลับมาเลือก "ทั้งหมด"
-        if hide_no_car and st.session_state['cal_car_filter'] == "📦 ไม่ใช้รถ (ยืมเฉพาะของ)":
+        # ป้องกันค้าง filter เก่าที่ไม่มีอยู่ในสวิตช์ปัจจุบัน
+        if st.session_state['cal_car_filter'] not in ["ทั้งหมด"] + available_options:
             st.session_state['cal_car_filter'] = "ทั้งหมด"
             st.rerun()
 
@@ -311,11 +323,17 @@ def render_booking_calendar(df_book, car_options=None):
 
     df_valid = df_book.dropna(subset=['Start_Time', 'End_Time']) if not df_book.empty else df_book
     
-    # กรองข้อมูลรายการตามสถานะ Checkbox
+    # --- LOGIC การกรองตามสวิตช์ ---
     if not df_valid.empty:
-        if st.session_state.get('cal_hide_no_car', False):
-            df_valid = df_valid[df_valid['Car'] != "📦 ไม่ใช้รถ (ยืมเฉพาะของ)"]
+        NO_CAR_VAL = "📦 ไม่ใช้รถ (ยืมเฉพาะของ)"
+        if show_only_equip:
+            # ติ๊กช่อง = แสดงเฉพาะการยืมของ
+            df_valid = df_valid[df_valid['Car'] == NO_CAR_VAL]
+        else:
+            # หน้าปกติ = ซ่อนการยืมของทั้งหมด (แสดงเฉพาะรายการจองรถ)
+            df_valid = df_valid[df_valid['Car'] != NO_CAR_VAL]
 
+        # กรองเพิ่มเติมหากกดเลือกปุ่มย่อยคันเฉพาะ
         if car_options and st.session_state.get('cal_car_filter', 'ทั้งหมด') != "ทั้งหมด":
             df_valid = df_valid[df_valid['Car'] == st.session_state['cal_car_filter']]
 
@@ -369,7 +387,9 @@ def render_booking_calendar(df_book, car_options=None):
                         st.write("")
                     else:
                         row = slot['row']
-                        label = f"{user_color_emoji(row['User'])} {row['User']}: {row['Task']}"
+                        # เปลี่ยนแปลงตรงนี้: ใช้ไอคอนรถแทนไอคอนสีแบบเดิม
+                        car_icon = get_car_icon(row['Car'])
+                        label = f"{car_icon} {row['User']}: {row['Task']}"
                         if len(label) > 26: label = label[:24] + "…"
                         if st.button(label, key=f"cal_ev_{w_idx}_{lane_i}_{slot['idx']}", use_container_width=True):
                             st.session_state['cal_selected_idx'] = slot['idx']
@@ -473,12 +493,12 @@ def page_car_booking(df_book, df_stock, df_users, sh):
         st.session_state.booking_s_date = now.date()
         st.session_state.booking_e_date = now.date()
 
+    # นำรถส่วนตัวออกแล้ว เหลือเฉพาะตัวเลือกที่กำหนด
     CAR_SPECS = {
         "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 1500, "type": "company"},
         "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2200, "type": "company"},
         "Geele-1": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
-        "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": {"max_seats": 99, "cargo_score": 9999, "type": "private"},
         "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": {"max_seats": 99, "cargo_score": 9999, "type": "no_car"}
     }
 
