@@ -242,71 +242,114 @@ def show_booking_detail(row):
         st.rerun()
 
 def render_booking_calendar(df_book, car_options=None, **kwargs):
-    if df_book.empty:
-        st.info("ไม่มีรายการจองในระบบ")
-        return
+    if 'cal_year' not in st.session_state:
+        now = get_thai_time() if 'get_thai_time' in globals() else datetime.now()
+        st.session_state['cal_year'] = now.year
+        st.session_state['cal_month'] = now.month
 
-    # 1. กำหนดสีแถบ Event แยกตามประเภทรถ/การยืม
-    car_colors = {
-        "Honda Jazz": "#3182ce",          # สีน้ำเงิน
-        "Isuzu Mu-X": "#2b6cb0",          # สีน้ำเงินเข้ม
-        "Isuzu D-max 4 Doors": "#dd6b20",  # สีส้ม
-        "Geele-1": "#d69e2e",             # สีเหลืองทอง
-        "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "#718096" # สีเทา
-    }
-
-    # 2. แปลงข้อมูลจาก DataFrame ให้เป็นโครงสร้าง Events ของ FullCalendar
-    events = []
-    for idx, row in df_book.iterrows():
-        car_name = str(row.get('Car', ''))
-        color = car_colors.get(car_name, "#319795")
+    # --- 1. FILTER SECTION (คืนส่วน Checkbox กรองข้อมูล) ---
+    st.markdown("##### 🔍 กรองการค้นหา")
+    
+    # Checkbox แสดงเฉพาะยืมของ
+    show_equipment_only = st.checkbox("📦 แสดงเฉพาะรายการยืมของ (ซ่อนการจองรถ)", key="cal_filter_equip")
+    
+    # Checkbox เลือกรถ
+    if car_options:
+        selected_cars = []
+        cols = st.columns(len(car_options) + 1)
         
-        icon = get_car_icon(car_name) if 'get_car_icon' in globals() else "🚗"
+        # ปุ่มเลือกทั้งหมด
+        all_selected = cols[0].checkbox("ทั้งหมด", value=True, key="cal_car_all")
         
-        events.append({
-            "id": str(idx),
-            "title": f"{icon} {row.get('User', '')}: {row.get('Task', '')}",
-            "start": pd.to_datetime(row['Start_Time']).strftime("%Y-%m-%dT%H:%M:%S"),
-            "end": pd.to_datetime(row['End_Time']).strftime("%Y-%m-%dT%H:%M:%S"),
-            "backgroundColor": color,
-            "borderColor": color,
-            "extendedProps": {
-                "car": car_name,
-                "user": str(row.get('User', '-')),
-                "task": str(row.get('Task', '-')),
-                "location": str(row.get('Location', '-')),
-                "equipment": str(row.get('Equipment', '-'))
-            }
-        })
+        for idx, car in enumerate(car_options):
+            val = cols[idx + 1].checkbox(f"🚗 {car}", value=all_selected, key=f"cal_car_{idx}")
+            if val or all_selected:
+                selected_cars.append(car)
+    else:
+        selected_cars = None
 
-    # 3. ตั้งค่าตัวปฏิทิน
-    calendar_options = {
-        "editable": False,
-        "selectable": True,
-        "headerToolbar": {
-            "left": "prev,next today",
-            "center": "title",
-            "right": "dayGridMonth,timeGridWeek,listMonth",
-        },
-        "initialView": "dayGridMonth",
-        "navLinks": True,
-    }
+    # กรอง Dataframe
+    df_filtered = df_book.copy()
+    if not df_filtered.empty:
+        if show_equipment_only:
+            df_filtered = df_filtered[df_filtered['Car'].str.contains('ไม่ใช้รถ|ยืมเฉพาะของ', na=False)]
+        elif selected_cars is not None:
+            df_filtered = df_filtered[df_filtered['Car'].isin(selected_cars)]
 
-    # 4. เรียกใช้งาน component
-    state = calendar(events=events, options=calendar_options, key="booking_fullcalendar")
+    # --- 2. NAVIGATION (เลื่อนเดือน) ---
+    nav1, nav2, nav3 = st.columns([1, 2, 1])
+    with nav1:
+        if st.button("← เดือนก่อน", use_container_width=True, key="btn_prev_m"):
+            m, y = st.session_state['cal_month'] - 1, st.session_state['cal_year']
+            if m < 1: m, y = 12, y - 1
+            st.session_state['cal_month'], st.session_state['cal_year'] = m, y
+            st.rerun()
+    with nav3:
+        if st.button("เดือนถัดไป →", use_container_width=True, key="btn_next_m"):
+            m, y = st.session_state['cal_month'] + 1, st.session_state['cal_year']
+            if m > 12: m, y = 1, y + 1
+            st.session_state['cal_month'], st.session_state['cal_year'] = m, y
+            st.rerun()
 
-    # 5. แสดงรายละเอียดเมื่อผู้ใช้คลิกที่ Event ในปฏิทิน
-    if state.get("eventClick"):
-        event_props = state["eventClick"]["event"]["extendedProps"]
+    year, month = st.session_state['cal_year'], st.session_state['cal_month']
+    thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                   "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+    with nav2:
+        st.markdown(f"<h3 style='text-align:center;'>{thai_months[month]} {year + 543}</h3>", unsafe_allow_html=True)
+
+    # --- 3. CALENDAR GRID (สร้างตารางแบบมีกรอบชัดเจน) ---
+    weekday_names = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"]
+    hcols = st.columns(7)
+    for c, name in zip(hcols, weekday_names):
+        c.markdown(f"<div style='text-align:center;font-weight:bold;padding:4px;background-color:#1e1e1e;color:#fff;border-radius:4px;'>{name}</div>", unsafe_allow_html=True)
+
+    days_in_month = calendar.monthrange(year, month)[1]
+    first_weekday = (date(year, month, 1).weekday() + 1) % 7
+    cells = [None] * first_weekday + list(range(1, days_in_month + 1))
+    while len(cells) % 7 != 0: cells.append(None)
+    weeks = [cells[i:i + 7] for i in range(0, len(cells), 7)]
+
+    # วาดช่องปฏิทินโดยใข้ st.container(border=True) ป้องกันการเบี้ยวหลุดกรอบ
+    for week_idx, week in enumerate(weeks):
+        cols = st.columns(7)
+        for day_idx, d in enumerate(week):
+            with cols[day_idx]:
+                if d is not None:
+                    with st.container(border=True):
+                        st.caption(f"**{d}**")
+                        curr_date = date(year, month, d)
+                        
+                        if not df_filtered.empty:
+                            # ดึงรายการจองที่ตรงกับวันนี้
+                            day_events = df_filtered[
+                                (pd.to_datetime(df_filtered['Start_Time']).dt.date <= curr_date) & 
+                                (pd.to_datetime(df_filtered['End_Time']).dt.date >= curr_date)
+                            ]
+                            
+                            for idx, row in day_events.iterrows():
+                                car_name = str(row.get('Car', ''))
+                                icon = get_car_icon(car_name) if 'get_car_icon' in globals() else "🚗"
+                                btn_label = f"{icon} {row.get('User', '')}: {row.get('Task', '')}"
+                                
+                                # ปุ่มรายการจองภายในช่องวัน
+                                if st.button(btn_label, key=f"btn_{year}_{month}_{d}_{idx}", use_container_width=True):
+                                    st.session_state['cal_selected_row'] = row.to_dict()
+                else:
+                    st.write("")
+
+    # --- 4. DETAILS POPUP (แสดงรายละเอียดเมื่อกดเลือกรายการ) ---
+    if 'cal_selected_row' in st.session_state and st.session_state['cal_selected_row']:
+        sel = st.session_state['cal_selected_row']
         st.write("---")
         with st.container(border=True):
-            st.subheader(f"📌 {state['eventClick']['event']['title']}")
-            st.write(f"👤 **ผู้จอง:** {event_props.get('user')}")
-            st.write(f"🚗 **รถที่ใช้:** {event_props.get('car')}")
-            st.write(f"📝 **งาน:** {event_props.get('task')}")
-            st.write(f"📍 **สถานที่:** {event_props.get('location')}")
-            st.write(f"📦 **อุปกรณ์ที่ยืม:** {event_props.get('equipment')}")
-
+            st.subheader(f"📌 รายละเอียดการจอง: {sel.get('User', '-')}")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.write(f"🚗 **รถ/อุปกรณ์:** {sel.get('Car', '-')}")
+                st.write(f"📝 **ชื่องาน:** {sel.get('Task', '-')}")
+            with col_b:
+                st.write(f"📍 **สถานที่:** {sel.get('Location', '-')}")
+                st.write(f"📦 **อุปกรณ์เพิ่มเติม:** {sel.get('Equipment', '-')}")
 # --- PAGE: ADMIN & INVENTORY ---
 def page_admin(df_book, df_stock, df_users, sh):
     st.title("🛠️ Admin Dashboard")
