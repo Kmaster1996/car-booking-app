@@ -1,18 +1,18 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
 import requests
-import uuid
 
 # --- CONFIG & SETUP ---
-st.set_page_config(page_title="NavGo System V9 (All-in-One)", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="NavGo System V8 (Manage)", layout="wide", initial_sidebar_state="expanded")
 
 def get_thai_time():
     return datetime.utcnow() + timedelta(hours=7)
 
+@st.cache_resource
 def get_client():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds_dict = dict(st.secrets["gcp_service_account"])
@@ -20,9 +20,20 @@ def get_client():
     client = gspread.authorize(creds)
     return client
 
+@st.cache_resource
+def get_spreadsheet():
+    """เปิดไฟล์ Google Sheets ครั้งเดียวแล้ว cache ไว้ (ไม่ใช่ data ที่เปลี่ยนบ่อย จึงไม่ต้องเปิดใหม่ทุก rerun)"""
+    client = get_client()
+    try:
+        return client.open("CarBookingDB")
+    except Exception:
+        st.error("❌ หาไฟล์ Google Sheets ไม่เจอ")
+        st.stop()
+
 # --- NOTIFY FUNCTION ---
 def send_telegram_notify(msg):
     try:
+        # Check secrets location (support both root and nested)
         if "telegram_token" in st.secrets:
             token = st.secrets["telegram_token"]
             chat_id = st.secrets["telegram_chat_id"]
@@ -31,36 +42,18 @@ def send_telegram_notify(msg):
             chat_id = st.secrets["telegram"]["telegram_chat_id"]
         else:
             return None
+
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'}
-        requests.post(url, data=payload)
+        requests.post(url, data=payload, timeout=5)
     except Exception:
         pass
 
-# ============================================================
-# LOAD DATA — NavGo (จองรถ) + Car Maintenance (เช็คระยะ/แบต)
-# เก็บทุกอย่างไว้ใน Google Sheet เดียวกัน (CarBookingDB)
-# ============================================================
+# --- LOAD DATA ---
+@st.cache_data(ttl=30, show_spinner=False)
 def load_data():
-    client = get_client()
-    try:
-        sh = client.open("CarBookingDB")
-    except:
-        st.error("❌ หาไฟล์ Google Sheets ไม่เจอ")
-        st.stop()
-
+    sh = get_spreadsheet()
     existing_sheets = [ws.title for ws in sh.worksheets()]
-
-    def get_or_create(name, headers, rows=200, cols=10):
-        if name in existing_sheets:
-            ws = sh.worksheet(name)
-            recs = ws.get_all_records()
-            df = pd.DataFrame(recs) if recs else pd.DataFrame(columns=headers)
-        else:
-            ws = sh.add_worksheet(name, rows, cols)
-            ws.append_row(headers)
-            df = pd.DataFrame(columns=headers)
-        return df
 
     # 1. Bookings
     try:
@@ -69,64 +62,45 @@ def load_data():
         df_book = pd.DataFrame(data_book)
         if df_book.empty and len(data_book) == 0:
             df_book = pd.DataFrame(columns=["User", "Task", "Car", "People", "Equipment", "Location", "Start_Time", "End_Time"])
+        
         if not df_book.empty:
             df_book['Start_Time'] = pd.to_datetime(df_book['Start_Time'].astype(str), errors='coerce')
             df_book['End_Time'] = pd.to_datetime(df_book['End_Time'].astype(str), errors='coerce')
             df_book = df_book.dropna(subset=['Start_Time', 'End_Time'])
             if 'Car' in df_book.columns: df_book['Car'] = df_book['Car'].astype(str).str.strip()
             if 'Equipment' in df_book.columns: df_book['Equipment'] = df_book['Equipment'].astype(str)
+            # Create Display Column for Dropdown
             df_book['Display'] = df_book.apply(lambda x: f"{x['User']} | {x['Car']} | {x['Start_Time'].strftime('%d/%m %H:%M')}", axis=1)
     except:
         df_book = pd.DataFrame(columns=["User", "Task", "Car", "People", "Equipment", "Location", "Start_Time", "End_Time"])
 
-    # 2. Stock
-    df_stock = get_or_create("StockMaster", ["ItemName", "TotalQty", "VolumeScore", "Description"])
+    # 2. Stock & Users (Standard Load)
+    if "StockMaster" in existing_sheets:
+        ws_stock = sh.worksheet("StockMaster")
+        df_stock = pd.DataFrame(ws_stock.get_all_records())
+    else:
+        ws_stock = sh.add_worksheet("StockMaster", 100, 5)
+        ws_stock.append_row(["ItemName", "TotalQty", "VolumeScore", "Description"])
+        df_stock = pd.DataFrame(columns=["ItemName", "TotalQty", "VolumeScore", "Description"])
 
-    # 3. Users
     if "Users" in existing_sheets:
-        df_users = get_or_create("Users", ["Name", "Department"])
+        ws_users = sh.worksheet("Users")
+        df_users = pd.DataFrame(ws_users.get_all_records())
     else:
         ws_users = sh.add_worksheet("Users", 100, 2)
         ws_users.append_row(["Name", "Department"])
         ws_users.append_row(["Admin", "IT"])
         df_users = pd.DataFrame([{"Name": "Admin", "Department": "IT"}])
 
-    # 4. Vehicles (Car Maintenance)
-    df_vehicles = get_or_create("Vehicles", ["ID", "Name", "Plate", "CurrentMileage"])
-    if not df_vehicles.empty:
-        df_vehicles['CurrentMileage'] = pd.to_numeric(df_vehicles['CurrentMileage'], errors='coerce').fillna(0)
-
-    # 5. Maintenance Items
-    df_mitems = get_or_create("MaintItems", ["ID", "VehicleID", "Name", "LastMileage", "IntervalKm", "LastDate", "IntervalMonths"])
-    if not df_mitems.empty:
-        df_mitems['LastMileage'] = pd.to_numeric(df_mitems['LastMileage'], errors='coerce').fillna(0)
-        df_mitems['IntervalKm'] = pd.to_numeric(df_mitems['IntervalKm'], errors='coerce').fillna(0)
-        df_mitems['IntervalMonths'] = pd.to_numeric(df_mitems['IntervalMonths'], errors='coerce').fillna(0)
-        df_mitems['LastDate'] = pd.to_datetime(df_mitems['LastDate'], errors='coerce')
-
-    # 6. Mileage Logs
-    df_mlogs = get_or_create("MileageLogs", ["ID", "VehicleID", "OldMileage", "NewMileage", "UpdatedBy", "CreatedAt"])
-
-    # 7. Devices (Battery tracker)
-    df_devices = get_or_create("Devices", ["ID", "Name", "IntervalDays", "LastChargedDate", "Notes", "SerialNumber"])
-    if not df_devices.empty:
-        df_devices['IntervalDays'] = pd.to_numeric(df_devices['IntervalDays'], errors='coerce').fillna(0)
-        df_devices['LastChargedDate'] = pd.to_datetime(df_devices['LastChargedDate'], errors='coerce')
-
-    # 8. Device Charge Logs
-    df_dlogs = get_or_create("DeviceChargeLogs", ["ID", "DeviceID", "OldDate", "NewDate", "UpdatedBy", "CreatedAt"])
-
-    return {
-        "book": df_book, "stock": df_stock, "users": df_users,
-        "vehicles": df_vehicles, "mitems": df_mitems, "mlogs": df_mlogs,
-        "devices": df_devices, "dlogs": df_dlogs, "sh": sh
-    }
+    return df_book, df_stock, df_users
 
 # --- SAVE FUNCTIONS ---
 def save_booking(sh, df):
     ws = sh.sheet1
+    # Remove Display column before saving
     export_df = df.copy()
     if 'Display' in export_df.columns: export_df = export_df.drop(columns=['Display'])
+    
     export_df['Start_Time'] = export_df['Start_Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
     export_df['End_Time'] = export_df['End_Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
     ws.clear()
@@ -142,25 +116,14 @@ def save_users(sh, df):
     ws.clear()
     ws.update([df.columns.values.tolist()] + df.values.tolist())
 
-def save_sheet(sh, sheet_name, df):
-    """ใช้บันทึกชีตของ Car Maintenance (Vehicles/MaintItems/Devices/Logs)"""
-    ws = sh.worksheet(sheet_name)
-    export_df = df.copy()
-    for col in export_df.columns:
-        if pd.api.types.is_datetime64_any_dtype(export_df[col]):
-            export_df[col] = export_df[col].dt.strftime('%Y-%m-%d')
-    export_df = export_df.fillna("")
-    ws.clear()
-    ws.update([export_df.columns.values.tolist()] + export_df.values.tolist())
-
-# --- HELPERS (Booking) ---
+# --- HELPERS ---
 def parse_equip_str(equip_str):
     if not equip_str or equip_str in ["-", "nan", ""]: return {}
     items = {}
     for part in equip_str.split(','):
         if ' x' in part:
             try:
-                name, qty = part.strip().rsplit(' x', 1)
+                name, qty = part.strip().rsplit(' x', 1) 
                 items[name.strip()] = int(qty)
             except: continue
     return items
@@ -168,43 +131,24 @@ def parse_equip_str(equip_str):
 def get_stock_status(df_book, df_stock, query_time=None):
     if query_time is None: query_time = get_thai_time()
     stock = {row['ItemName']: {"Total": int(row['TotalQty']), "Used": 0} for _, row in df_stock.iterrows()}
+    
     if not df_book.empty:
         active = df_book[(df_book['Start_Time'] <= query_time) & (df_book['End_Time'] >= query_time)]
         for _, row in active.iterrows():
             for k, v in parse_equip_str(row['Equipment']).items():
                 if k in stock: stock[k]['Used'] += v
+    
     for k in stock: stock[k]['Available'] = stock[k]['Total'] - stock[k]['Used']
     return pd.DataFrame(stock).T
-
-# --- HELPERS (Car Maintenance) ---
-def compute_item_percent(row, current_mileage):
-    percent_km = None
-    percent_date = None
-    if row.get('IntervalKm', 0) and row['IntervalKm'] > 0:
-        used = current_mileage - (row.get('LastMileage') or 0)
-        percent_km = used / row['IntervalKm']
-    if row.get('IntervalMonths', 0) and row['IntervalMonths'] > 0 and pd.notna(row.get('LastDate')):
-        months_used = (date.today() - row['LastDate'].date()).days / 30.4375
-        percent_date = months_used / row['IntervalMonths']
-    vals = [v for v in [percent_km, percent_date] if v is not None]
-    return max(vals) if vals else 0
-
-def compute_device_percent(row):
-    if pd.isna(row.get('LastChargedDate')) or not row.get('IntervalDays') or row['IntervalDays'] <= 0:
-        return 1 if pd.isna(row.get('LastChargedDate')) else 0
-    days_since = (date.today() - row['LastChargedDate'].date()).days
-    return days_since / row['IntervalDays']
-
-def status_label(percent):
-    if percent >= 1: return "🔴 ถึงกำหนดแล้ว"
-    elif percent >= 0.75: return "🟠 ใกล้ถึงกำหนด"
-    else: return "🟢 ปกติ"
 
 # --- PAGE: ADMIN & INVENTORY ---
 def page_admin(df_book, df_stock, df_users, sh):
     st.title("🛠️ Admin Dashboard")
     now = get_thai_time()
-
+    
+    # ------------------------------------------------
+    # 1. DAILY REMINDER
+    # ------------------------------------------------
     st.write("### 🔔 แจ้งเตือนการคืนของ (Manual Trigger)")
     with st.expander("กดเพื่อตรวจสอบและแจ้งเตือนเข้ากลุ่ม Telegram"):
         st.write("ระบบจะค้นหารายการที่ **ครบกำหนดคืนวันนี้** หรือ **เกินกำหนด** แล้วส่งสรุปเข้ากลุ่ม")
@@ -214,6 +158,7 @@ def page_admin(df_book, df_stock, df_users, sh):
             else:
                 today_str = now.strftime('%Y-%m-%d')
                 due_today = df_book[df_book['End_Time'].dt.strftime('%Y-%m-%d') == today_str]
+                
                 if due_today.empty:
                     st.info("✅ วันนี้ไม่มีรายการครบกำหนดคืน")
                 else:
@@ -221,19 +166,24 @@ def page_admin(df_book, df_stock, df_users, sh):
                     msg_header = f"📢 <b>แจ้งเตือนรายการคืนวันนี้ ({now.strftime('%d/%m')})</b>\nมีทั้งหมด {count} รายการ\n----------------------------\n"
                     msg_body = ""
                     for _, row in due_today.iterrows():
+                        # --- เพิ่มสถานที่ในสรุปรายวัน ---
                         msg_body += (
                             f"👤 <b>{row['User']}</b>\n"
-                            f"📍 {row['Location']}\n"
+                            f"📍 {row['Location']}\n" 
                             f"🚗 {row['Car']}\n"
                             f"📦 {row['Equipment']}\n"
                             f"🔴 คืนเวลา: {row['End_Time'].strftime('%H:%M')}\n\n"
                         )
+                    
                     full_msg = msg_header + msg_body + "<i>รบกวนตรวจสอบและคืนของให้ตรงเวลาครับ</i>"
                     send_telegram_notify(full_msg)
                     st.success(f"ส่งแจ้งเตือน {count} รายการเรียบร้อย!")
 
     st.divider()
 
+    # ------------------------------------------------
+    # 2. MONITOR
+    # ------------------------------------------------
     st.write("### 🕵️‍♂️ Monitor")
     active = pd.DataFrame()
     if not df_book.empty:
@@ -248,7 +198,10 @@ def page_admin(df_book, df_stock, df_users, sh):
     if not found: st.success("✅ ไม่มีใครเบิกของ")
 
     st.divider()
-
+    
+    # ------------------------------------------------
+    # 3. STOCK & USER
+    # ------------------------------------------------
     st.write("### 📊 สถานะคลังเครื่องมือ")
     status_df = get_stock_status(df_book, df_stock, now)
     if not status_df.empty:
@@ -259,12 +212,13 @@ def page_admin(df_book, df_stock, df_users, sh):
                 delta_msg = f"-{int(row['Used'])} ใช้อยู่" if row['Used'] > 0 else "ครบ"
                 delta_color = "inverse" if row['Available'] == 0 else "normal"
                 st.metric(label=item_name, value=f"{int(row['Available'])} / {int(row['Total'])}", delta=delta_msg, delta_color=delta_color)
-
+    
     with st.expander("📝 แก้ไข / เพิ่ม / ลบ อุปกรณ์ (คลิกที่นี่)"):
         st.caption("💡 วิธีใช้: แก้ไขตัวเลขในตารางได้เลย / เพิ่มแถวใหม่ด้านล่าง / ลบแถวโดยคลิกหน้าเลขแถวแล้วกด Delete")
         ed_stock = st.data_editor(df_stock, num_rows="dynamic", use_container_width=True, key="admin_stock")
         if st.button("💾 บันทึก Stock", type="primary"):
             save_stock(sh, ed_stock)
+            load_data.clear()
             st.rerun()
 
     st.divider()
@@ -273,13 +227,14 @@ def page_admin(df_book, df_stock, df_users, sh):
         ed_users = st.data_editor(df_users, num_rows="dynamic", use_container_width=True, key="admin_users")
         if st.button("บันทึกรายชื่อ"):
             save_users(sh, ed_users)
+            load_data.clear()
             st.rerun()
-
+            
 # --- PAGE: CAR BOOKING ---
 def page_car_booking(df_book, df_stock, df_users, sh):
     st.title("🚗 NavGo: จองรถและอุปกรณ์")
     st.caption(f"Time: {get_thai_time().strftime('%d/%m/%Y %H:%M')}")
-
+    
     if 'booking_s_time' not in st.session_state:
         now = get_thai_time()
         next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0)
@@ -299,6 +254,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
 
     tab1, tab2, tab3 = st.tabs(["📦 จองใหม่", "📋 ตารางการใช้งาน", "✏️ แก้ไข/ยกเลิก"])
 
+    # --- TAB 1: จองใหม่ ---
     with tab1:
         curr_s_date = st.session_state.booking_s_date
         curr_s_time = st.session_state.booking_s_time
@@ -318,11 +274,11 @@ def page_car_booking(df_book, df_stock, df_users, sh):
             task = st.text_input("ภารกิจ", key="new_task")
             loc = st.text_input("สถานที่", key="new_loc")
             ppl = st.number_input("จำนวนคน", 1, 10, 2, key="new_ppl")
-
+            
             st.divider()
             st.subheader("เลือกอุปกรณ์")
             st.caption(f"ยอดช่วง: {curr_s_time.strftime('%H:%M')} - {curr_e_time.strftime('%H:%M')}")
-
+            
             selected_equip = {}
             if not df_stock.empty:
                 for _, row in df_stock.iterrows():
@@ -368,7 +324,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                             valid_cars.append(c_name)
 
             sel_car = st.selectbox("เลือก:", valid_cars if valid_cars else ["ไม่มีตัวเลือก"], key="new_car")
-
+            
             if st.button("🚀 ยืนยันจอง", type="primary", disabled=(not valid_cars or sel_car == "ไม่มีตัวเลือก")):
                 specs = CAR_SPECS.get(sel_car, {})
                 final_overlap = pd.DataFrame()
@@ -385,13 +341,14 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                     new_row = {"User": user, "Task": task, "Car": sel_car, "People": ppl, "Equipment": equip_final_str, "Location": loc, "Start_Time": check_start_dt, "End_Time": check_end_dt}
                     df_book = pd.concat([df_book, pd.DataFrame([new_row])], ignore_index=True)
                     save_booking(sh, df_book)
-
+                    
+                    # --- แจ้งเตือนจองใหม่ (เพิ่มสถานที่) ---
                     msg = (
                         f"📣 <b>จองใหม่ (NavGo)</b>\n"
                         f"----------------------------\n"
                         f"👤 <b>{user}</b>\n"
                         f"📝 ภารกิจ: {task}\n"
-                        f"📍 <b>สถานที่: {loc}</b>\n"
+                        f"📍 <b>สถานที่: {loc}</b>\n"  # <--- เพิ่มตรงนี้
                         f"🚗 {sel_car}\n"
                         f"📦 {equip_final_str}\n"
                         f"----------------------------\n"
@@ -399,12 +356,14 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                         f"🔴 <b>วันคืน:</b> {check_end_dt.strftime('%d/%m/%Y %H:%M')}"
                     )
                     send_telegram_notify(msg)
-
+                    
                     st.success("บันทึกสำเร็จ!")
+                    load_data.clear()
                     for k in ['booking_s_time', 'booking_e_time', 'booking_s_date', 'booking_e_date']: del st.session_state[k]
                     time.sleep(1)
                     st.rerun()
 
+    # --- TAB 2: TABLE ---
     with tab2:
         st.subheader("ตารางการจองทั้งหมด")
         if not df_book.empty:
@@ -413,13 +372,14 @@ def page_car_booking(df_book, df_stock, df_users, sh):
             show_df['End_Time'] = show_df['End_Time'].dt.strftime('%d/%m %H:%M')
             st.dataframe(show_df[['User', 'Task', 'Location', 'Car', 'Equipment', 'Start_Time', 'End_Time']], use_container_width=True)
 
+    # --- TAB 3: EDIT / DELETE ---
     with tab3:
         st.header("✏️ แก้ไข หรือ ยกเลิก")
         if not df_book.empty:
             manage_df = df_book.sort_values("Start_Time", ascending=False)
             booking_options = manage_df['Display'].tolist()
             selected_booking_str = st.selectbox("เลือกรายการ:", booking_options)
-
+            
             if selected_booking_str:
                 row_idx = df_book[df_book['Display'] == selected_booking_str].index[0]
                 row_data = df_book.loc[row_idx]
@@ -432,9 +392,11 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                     if st.button("ยืนยันลบ", type="primary"):
                         df_book = df_book.drop(row_idx)
                         save_booking(sh, df_book)
+                        # --- แจ้งเตือนลบ (เพิ่มสถานที่) ---
                         msg = f"❌ <b>ยกเลิกการจอง</b>\n👤 {row_data['User']}\n📝 {row_data['Task']}\n📍 {row_data['Location']}\n🚗 {row_data['Car']}"
                         send_telegram_notify(msg)
                         st.success("ลบเรียบร้อย!")
+                        load_data.clear()
                         time.sleep(1)
                         st.rerun()
 
@@ -445,7 +407,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                     new_s_time = c_ed_t1.time_input("เวลายืม (ใหม่)", value=row_data['Start_Time'].time())
                     new_e_date = c_ed_t2.date_input("วันคืน (ใหม่)", value=row_data['End_Time'].date())
                     new_e_time = c_ed_t2.time_input("เวลาคืน (ใหม่)", value=row_data['End_Time'].time())
-
+                    
                     new_start_dt = datetime.combine(new_s_date, new_s_time)
                     new_end_dt = datetime.combine(new_e_date, new_e_time)
 
@@ -460,7 +422,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                     st.write("--- อุปกรณ์ (คำนวณ Stock ใหม่) ---")
                     current_equip_dict = parse_equip_str(row_data['Equipment'])
                     other_overlaps = df_book[(df_book.index != row_idx) & (df_book['Start_Time'] < new_end_dt) & (df_book['End_Time'] > new_start_dt)]
-
+                    
                     edited_equip_result = {}
                     if not df_stock.empty:
                         cols = st.columns(3)
@@ -470,11 +432,11 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                             used_by_others = sum([parse_equip_str(r['Equipment']).get(item_name, 0) for _, r in other_overlaps.iterrows()])
                             max_avail = max(0, total_qty - used_by_others)
                             default_val = min(current_equip_dict.get(item_name, 0), max_avail)
-
+                            
                             with cols[i % 3]:
                                 new_qty = st.number_input(f"{item_name} (ว่าง {max_avail})", 0, max_avail, default_val, key=f"ed_{row_idx}_{item_name}")
                                 if new_qty > 0: edited_equip_result[item_name] = new_qty
-
+                    
                     if st.button("💾 บันทึกแก้ไข", type="primary"):
                         if new_start_dt >= new_end_dt:
                             st.error("เวลาคืนต้องหลังเวลาเริ่ม")
@@ -484,7 +446,7 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                             if specs.get('type') == 'company':
                                 car_conflict = df_book[(df_book.index != row_idx) & (df_book['Car'] == ed_car) & (df_book['Start_Time'] < new_end_dt) & (df_book['End_Time'] > new_start_dt)]
                                 if not car_conflict.empty: is_conflict = True
-
+                            
                             if is_conflict:
                                 st.error(f"❌ รถ {ed_car} ไม่ว่างช่วงใหม่นี้")
                             else:
@@ -497,12 +459,13 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                                 df_book.at[row_idx, 'End_Time'] = new_end_dt
                                 df_book.at[row_idx, 'Equipment'] = new_equip_str
                                 save_booking(sh, df_book)
-
+                                
+                                # --- แจ้งเตือนแก้ไข (เพิ่มสถานที่) ---
                                 msg = (
                                     f"✏️ <b>แก้ไขรายการ (NavGo)</b>\n"
                                     f"👤 <b>{row_data['User']}</b>\n"
                                     f"📝 {ed_task}\n"
-                                    f"📍 {ed_loc}\n"
+                                    f"📍 {ed_loc}\n" # <--- เพิ่มตรงนี้
                                     f"📦 {new_equip_str}\n"
                                     f"----------------------------\n"
                                     f"🟢 <b>วันยืมใหม่:</b> {new_start_dt.strftime('%d/%m/%Y %H:%M')}\n"
@@ -510,240 +473,26 @@ def page_car_booking(df_book, df_stock, df_users, sh):
                                 )
                                 send_telegram_notify(msg)
                                 st.success("แก้ไขเรียบร้อย!")
+                                load_data.clear()
                                 time.sleep(1)
                                 st.rerun()
         else:
             st.info("ไม่มีรายการ")
 
-# --- PAGE: CAR MAINTENANCE & DEVICE BATTERY ---
-def page_car_maintenance(data):
-    sh = data["sh"]
-    df_vehicles = data["vehicles"]
-    df_mitems = data["mitems"]
-    df_mlogs = data["mlogs"]
-    df_devices = data["devices"]
-    df_dlogs = data["dlogs"]
-
-    st.title("🔧 เช็คระยะรถ & แจ้งเตือนแบต")
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 ภาพรวม", "🚗 รถยนต์", "🔋 อุปกรณ์แบต", "📜 ประวัติ"])
-
-    # --- TAB 1: DASHBOARD ---
-    with tab1:
-        st.subheader("สถานะรถยนต์")
-        if df_vehicles.empty:
-            st.info("ยังไม่มีข้อมูลรถ (ไปเพิ่มที่แท็บ 'รถยนต์')")
-        else:
-            for _, v in df_vehicles.iterrows():
-                items = df_mitems[df_mitems['VehicleID'] == v['ID']]
-                st.markdown(f"**🚗 {v['Name']}** ({v['Plate']}) — เลขไมล์ปัจจุบัน: {int(v['CurrentMileage']):,} กม.")
-                if items.empty:
-                    st.caption("ไม่มีรายการบำรุงรักษา")
-                else:
-                    cols = st.columns(3)
-                    for i, (_, it) in enumerate(items.iterrows()):
-                        pct = compute_item_percent(it, v['CurrentMileage'])
-                        with cols[i % 3]:
-                            st.metric(label=it['Name'], value=status_label(pct), delta=f"{pct*100:.0f}%")
-                st.divider()
-
-        st.subheader("สถานะอุปกรณ์แบต")
-        if df_devices.empty:
-            st.info("ยังไม่มีข้อมูลอุปกรณ์")
-        else:
-            cols = st.columns(4)
-            for i, (_, d) in enumerate(df_devices.iterrows()):
-                pct = compute_device_percent(d)
-                with cols[i % 4]:
-                    st.metric(label=d['Name'], value=status_label(pct))
-
-    # --- TAB 2: VEHICLES ---
-    with tab2:
-        st.subheader("จัดการรถยนต์")
-        with st.expander("➕ เพิ่มรถใหม่"):
-            new_name = st.text_input("ชื่อรถ", key="new_v_name")
-            new_plate = st.text_input("ทะเบียน", key="new_v_plate")
-            new_mileage = st.number_input("เลขไมล์เริ่มต้น", 0, step=100, key="new_v_mileage")
-            if st.button("บันทึกรถใหม่"):
-                vid = str(uuid.uuid4())
-                new_row = {"ID": vid, "Name": new_name, "Plate": new_plate, "CurrentMileage": new_mileage}
-                df_vehicles = pd.concat([df_vehicles, pd.DataFrame([new_row])], ignore_index=True)
-                save_sheet(sh, "Vehicles", df_vehicles)
-                st.success("เพิ่มรถเรียบร้อย")
-                st.rerun()
-
-        if df_vehicles.empty:
-            st.info("ยังไม่มีรถในระบบ")
-        else:
-            vehicle_names = df_vehicles['Name'].tolist()
-            sel_v_name = st.selectbox("เลือกรถ", vehicle_names)
-            v_row = df_vehicles[df_vehicles['Name'] == sel_v_name].iloc[0]
-            vid = v_row['ID']
-
-            c1, c2 = st.columns(2)
-            with c1:
-                st.write(f"**ทะเบียน:** {v_row['Plate']}")
-                st.write(f"**เลขไมล์ปัจจุบัน:** {int(v_row['CurrentMileage']):,} กม.")
-                new_mileage_val = st.number_input("อัปเดตเลขไมล์", value=int(v_row['CurrentMileage']), step=100, key=f"upd_mileage_{vid}")
-                updater = st.text_input("ผู้บันทึก (ชื่อ)", key=f"upd_by_{vid}")
-                if st.button("💾 บันทึกเลขไมล์", key=f"btn_upd_mileage_{vid}"):
-                    if not updater:
-                        st.error("กรุณาระบุชื่อผู้บันทึก")
-                    else:
-                        old_mileage = v_row['CurrentMileage']
-                        df_vehicles.loc[df_vehicles['ID'] == vid, 'CurrentMileage'] = new_mileage_val
-                        save_sheet(sh, "Vehicles", df_vehicles)
-                        log_row = {"ID": str(uuid.uuid4()), "VehicleID": vid, "OldMileage": old_mileage,
-                                   "NewMileage": new_mileage_val, "UpdatedBy": updater,
-                                   "CreatedAt": get_thai_time().strftime('%Y-%m-%d %H:%M:%S')}
-                        df_mlogs = pd.concat([df_mlogs, pd.DataFrame([log_row])], ignore_index=True)
-                        save_sheet(sh, "MileageLogs", df_mlogs)
-                        st.success("อัปเดตเลขไมล์เรียบร้อย")
-                        st.rerun()
-
-            with c2:
-                st.write("")
-                st.write("")
-                if st.button("🗑️ ลบรถคันนี้", key=f"del_v_{vid}"):
-                    df_vehicles = df_vehicles[df_vehicles['ID'] != vid]
-                    df_mitems = df_mitems[df_mitems['VehicleID'] != vid]
-                    save_sheet(sh, "Vehicles", df_vehicles)
-                    save_sheet(sh, "MaintItems", df_mitems)
-                    st.success("ลบรถเรียบร้อย")
-                    st.rerun()
-
-            st.divider()
-            st.write("### 🔩 รายการบำรุงรักษา")
-            v_items = df_mitems[df_mitems['VehicleID'] == vid].copy()
-            if not v_items.empty:
-                v_items['สถานะ'] = v_items.apply(lambda r: status_label(compute_item_percent(r, v_row['CurrentMileage'])), axis=1)
-                show_items = v_items.copy()
-                show_items['LastDate'] = show_items['LastDate'].dt.strftime('%d/%m/%Y')
-                st.dataframe(show_items[['Name', 'LastMileage', 'IntervalKm', 'LastDate', 'IntervalMonths', 'สถานะ']], use_container_width=True)
-
-            with st.expander("➕ เพิ่ม / แก้ไขรายการบำรุงรักษา"):
-                item_names = ["-- เพิ่มใหม่ --"] + v_items['Name'].tolist()
-                sel_item = st.selectbox("เลือกรายการ", item_names, key=f"sel_item_{vid}")
-                if sel_item == "-- เพิ่มใหม่ --":
-                    it_name = st.text_input("ชื่อรายการ (เช่น เปลี่ยนน้ำมันเครื่อง)", key=f"it_name_{vid}")
-                    it_last_km = st.number_input("เลขไมล์ล่าสุดที่ทำ", 0, step=100, key=f"it_km_{vid}")
-                    it_interval_km = st.number_input("ระยะ (กม.)", 0, step=500, key=f"it_ikm_{vid}")
-                    it_last_date = st.date_input("วันที่ทำล่าสุด", value=date.today(), key=f"it_date_{vid}")
-                    it_interval_months = st.number_input("ระยะ (เดือน)", 0, step=1, key=f"it_imo_{vid}")
-                    if st.button("บันทึกรายการใหม่", key=f"btn_new_item_{vid}"):
-                        new_item = {"ID": str(uuid.uuid4()), "VehicleID": vid, "Name": it_name,
-                                    "LastMileage": it_last_km, "IntervalKm": it_interval_km,
-                                    "LastDate": it_last_date.strftime('%Y-%m-%d'), "IntervalMonths": it_interval_months}
-                        df_mitems = pd.concat([df_mitems, pd.DataFrame([new_item])], ignore_index=True)
-                        save_sheet(sh, "MaintItems", df_mitems)
-                        st.success("เพิ่มรายการเรียบร้อย")
-                        st.rerun()
-                else:
-                    it_row = v_items[v_items['Name'] == sel_item].iloc[0]
-                    it_id = it_row['ID']
-                    it_last_km = st.number_input("เลขไมล์ล่าสุดที่ทำ", value=int(it_row['LastMileage']), step=100, key=f"ed_km_{it_id}")
-                    it_interval_km = st.number_input("ระยะ (กม.)", value=int(it_row['IntervalKm']), step=500, key=f"ed_ikm_{it_id}")
-                    default_date = it_row['LastDate'].date() if pd.notna(it_row['LastDate']) else date.today()
-                    it_last_date = st.date_input("วันที่ทำล่าสุด", value=default_date, key=f"ed_date_{it_id}")
-                    it_interval_months = st.number_input("ระยะ (เดือน)", value=int(it_row['IntervalMonths']), step=1, key=f"ed_imo_{it_id}")
-                    cbtn1, cbtn2 = st.columns(2)
-                    if cbtn1.button("💾 บันทึกแก้ไข", key=f"btn_ed_item_{it_id}"):
-                        df_mitems.loc[df_mitems['ID'] == it_id, 'LastMileage'] = it_last_km
-                        df_mitems.loc[df_mitems['ID'] == it_id, 'IntervalKm'] = it_interval_km
-                        df_mitems.loc[df_mitems['ID'] == it_id, 'LastDate'] = pd.to_datetime(it_last_date)
-                        df_mitems.loc[df_mitems['ID'] == it_id, 'IntervalMonths'] = it_interval_months
-                        save_sheet(sh, "MaintItems", df_mitems)
-                        st.success("แก้ไขเรียบร้อย")
-                        st.rerun()
-                    if cbtn2.button("🗑️ ลบรายการนี้", key=f"btn_del_item_{it_id}"):
-                        df_mitems = df_mitems[df_mitems['ID'] != it_id]
-                        save_sheet(sh, "MaintItems", df_mitems)
-                        st.success("ลบเรียบร้อย")
-                        st.rerun()
-
-    # --- TAB 3: DEVICES ---
-    with tab3:
-        st.subheader("จัดการอุปกรณ์แบต")
-        with st.expander("➕ เพิ่มอุปกรณ์ใหม่"):
-            d_name = st.text_input("ชื่ออุปกรณ์", key="new_d_name")
-            d_interval = st.number_input("รอบชาร์จ (วัน)", 0, step=1, key="new_d_interval")
-            d_notes = st.text_input("หมายเหตุ", key="new_d_notes")
-            d_serial = st.text_input("Serial Number", key="new_d_serial")
-            if st.button("บันทึกอุปกรณ์ใหม่"):
-                new_dev = {"ID": str(uuid.uuid4()), "Name": d_name, "IntervalDays": d_interval,
-                           "LastChargedDate": "", "Notes": d_notes, "SerialNumber": d_serial}
-                df_devices = pd.concat([df_devices, pd.DataFrame([new_dev])], ignore_index=True)
-                save_sheet(sh, "Devices", df_devices)
-                st.success("เพิ่มอุปกรณ์เรียบร้อย")
-                st.rerun()
-
-        if df_devices.empty:
-            st.info("ยังไม่มีอุปกรณ์ในระบบ")
-        else:
-            for _, d in df_devices.iterrows():
-                pct = compute_device_percent(d)
-                did = d['ID']
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([2, 2, 1])
-                    with c1:
-                        st.write(f"**{d['Name']}**  {status_label(pct)}")
-                        last_charged = d['LastChargedDate'].strftime('%d/%m/%Y') if pd.notna(d['LastChargedDate']) else "ไม่เคยชาร์จ"
-                        st.caption(f"ชาร์จล่าสุด: {last_charged} | รอบ: {int(d['IntervalDays'])} วัน | SN: {d['SerialNumber'] or '-'}")
-                    with c2:
-                        charger_name = st.text_input("ผู้ชาร์จ", key=f"charger_{did}", label_visibility="collapsed", placeholder="ชื่อผู้ชาร์จ")
-                    with c3:
-                        if st.button("🔋 ชาร์จแล้ว", key=f"btn_charge_{did}"):
-                            if not charger_name:
-                                st.error("กรุณาระบุชื่อผู้ชาร์จ")
-                            else:
-                                old_date = d['LastChargedDate'].strftime('%Y-%m-%d') if pd.notna(d['LastChargedDate']) else ""
-                                new_date_str = date.today().strftime('%Y-%m-%d')
-                                df_devices.loc[df_devices['ID'] == did, 'LastChargedDate'] = pd.to_datetime(new_date_str)
-                                save_sheet(sh, "Devices", df_devices)
-                                log_row = {"ID": str(uuid.uuid4()), "DeviceID": did, "OldDate": old_date,
-                                           "NewDate": new_date_str, "UpdatedBy": charger_name,
-                                           "CreatedAt": get_thai_time().strftime('%Y-%m-%d %H:%M:%S')}
-                                df_dlogs = pd.concat([df_dlogs, pd.DataFrame([log_row])], ignore_index=True)
-                                save_sheet(sh, "DeviceChargeLogs", df_dlogs)
-                                st.success("บันทึกการชาร์จเรียบร้อย")
-                                st.rerun()
-                        if st.button("🗑️ ลบ", key=f"btn_del_dev_{did}"):
-                            df_devices = df_devices[df_devices['ID'] != did]
-                            save_sheet(sh, "Devices", df_devices)
-                            st.rerun()
-
-    # --- TAB 4: HISTORY ---
-    with tab4:
-        st.subheader("ประวัติเลขไมล์")
-        if not df_mlogs.empty and not df_vehicles.empty:
-            show = df_mlogs.merge(df_vehicles[['ID', 'Name']], left_on='VehicleID', right_on='ID', suffixes=('', '_v'))
-            show = show.sort_values('CreatedAt', ascending=False)
-            st.dataframe(show[['Name', 'OldMileage', 'NewMileage', 'UpdatedBy', 'CreatedAt']], use_container_width=True)
-        else:
-            st.info("ยังไม่มีประวัติ")
-
-        st.subheader("ประวัติการชาร์จ")
-        if not df_dlogs.empty and not df_devices.empty:
-            show2 = df_dlogs.merge(df_devices[['ID', 'Name']], left_on='DeviceID', right_on='ID', suffixes=('', '_d'))
-            show2 = show2.sort_values('CreatedAt', ascending=False)
-            st.dataframe(show2[['Name', 'OldDate', 'NewDate', 'UpdatedBy', 'CreatedAt']], use_container_width=True)
-        else:
-            st.info("ยังไม่มีประวัติ")
-
 # --- MAIN ---
 try:
-    data = load_data()
+    sh = get_spreadsheet()
+    df_book, df_stock, df_users = load_data()
     with st.sidebar:
         st.header("NavGo Menu")
-        page = st.radio("ไปที่หน้า:", ["🚗 จองรถ & อุปกรณ์", "🛠️ Admin & Stock", "🔧 เช็คระยะรถ & แบต"])
+        page = st.radio("ไปที่หน้า:", ["🚗 จองรถ & อุปกรณ์", "🛠️ Admin & Stock"])
         st.write("---")
         st.caption(f"Time: {get_thai_time().strftime('%H:%M')}")
 
     if page == "🚗 จองรถ & อุปกรณ์":
-        page_car_booking(data["book"], data["stock"], data["users"], data["sh"])
-    elif page == "🛠️ Admin & Stock":
-        page_admin(data["book"], data["stock"], data["users"], data["sh"])
+        page_car_booking(df_book, df_stock, df_users, sh)
     else:
-        page_car_maintenance(data)
+        page_admin(df_book, df_stock, df_users, sh)
 
 except Exception as e:
     st.error(f"Error: {e}")
