@@ -247,7 +247,7 @@ def render_booking_calendar(df_book, car_options=None, **kwargs):
         st.session_state['cal_year'] = now.year
         st.session_state['cal_month'] = now.month
 
-    # --- 1. FILTER SECTION (ส่วน Filter แบบเดิม) ---
+    # --- 1. FILTER SECTION (กรองข้อมูล) ---
     st.markdown("##### 🔍 กรองการค้นหา")
     show_equipment_only = st.checkbox("📦 แสดงเฉพาะรายการยืมของ (ซ่อนการจองรถ)", key="cal_filter_equip")
     
@@ -270,7 +270,7 @@ def render_booking_calendar(df_book, car_options=None, **kwargs):
         elif selected_cars is not None:
             df_filtered = df_filtered[df_filtered['Car'].isin(selected_cars)]
 
-    # --- 2. NAVIGATION ---
+    # --- 2. NAVIGATION (เลื่อนเดือน) ---
     nav1, nav2, nav3 = st.columns([1, 2, 1])
     with nav1:
         if st.button("← เดือนก่อน", use_container_width=True, key="btn_prev_m"):
@@ -291,110 +291,71 @@ def render_booking_calendar(df_book, car_options=None, **kwargs):
     with nav2:
         st.markdown(f"<h3 style='text-align:center;'>{thai_months[month]} {year + 543}</h3>", unsafe_allow_html=True)
 
-    # --- 3. HTML/CSS GRID CALENDAR WITH EVENT SPANNING ---
-    # กำหนดสีแยกตามประเภทรถ
-    car_colors = {
-        "Honda Jazz": "#2b6cb0",
-        "Isuzu Mu-X": "#2c5282",
-        "Isuzu D-max 4 Doors": "#dd6b20",
-        "Geele-1": "#d69e2e",
-        "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "#4a5568"
-    }
+    # --- 3. CALENDAR GRID WITH INTERACTIVE BUTTONS ---
+    weekday_names = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"]
+    hcols = st.columns(7)
+    for c, name in zip(hcols, weekday_names):
+        c.markdown(f"<div style='text-align:center;font-weight:bold;padding:6px;background-color:#2d3748;color:#fff;border-radius:4px;'>{name}</div>", unsafe_allow_html=True)
 
     days_in_month = cal_mod.monthrange(year, month)[1]
     first_weekday = (date(year, month, 1).weekday() + 1) % 7 # 0 = Sunday
-    
-    # CSS สำหรับสร้าง CSS Grid ปฏิทิน
-    calendar_css = """
-    <style>
-    .cal-grid {
-        display: grid;
-        grid-template-columns: repeat(7, 1fr);
-        gap: 4px;
-        background-color: #1a202c;
-        border-radius: 8px;
-        padding: 8px;
-    }
-    .cal-header {
-        background-color: #2d3748;
-        color: #fff;
-        text-align: center;
-        font-weight: bold;
-        padding: 6px;
-        border-radius: 4px;
-    }
-    .cal-day-cell {
-        background-color: #0e1117;
-        border: 1px solid #2d3748;
-        border-radius: 4px;
-        min-height: 90px;
-        padding: 4px;
-        position: relative;
-    }
-    .cal-day-num {
-        font-weight: bold;
-        font-size: 12px;
-        color: #a0aec0;
-        margin-bottom: 4px;
-    }
-    .cal-event {
-        color: white;
-        font-size: 11px;
-        padding: 3px 6px;
-        border-radius: 4px;
-        margin-bottom: 3px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.3);
-    }
-    </style>
-    """
+    cells = [None] * first_weekday + list(range(1, days_in_month + 1))
+    while len(cells) % 7 != 0: cells.append(None)
+    weeks = [cells[i:i + 7] for i in range(0, len(cells), 7)]
 
-    html_code = calendar_css + '<div class="cal-grid">'
-    
-    # Header สัปดาห์
-    for day_name in ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"]:
-        html_code += f'<div class="cal-header">{day_name}</div>'
-
-    # ช่องว่างก่อนเริ่มวันที่ 1
-    for _ in range(first_weekday):
-        html_code += '<div class="cal-day-cell" style="opacity: 0.3;"></div>'
-
-    # วาดช่องวันที่และ Event
-    for d in range(1, days_in_month + 1):
-        curr_date = date(year, month, d)
-        html_code += f'<div class="cal-day-cell"><div class="cal-day-num">{d}</div>'
-
-        if not df_filtered.empty:
-            day_events = df_filtered[
-                (pd.to_datetime(df_filtered['Start_Time']).dt.date <= curr_date) & 
-                (pd.to_datetime(df_filtered['End_Time']).dt.date >= curr_date)
-            ]
-
-            for _, row in day_events.iterrows():
-                start_d = pd.to_datetime(row['Start_Time']).date()
-                end_d = pd.to_datetime(row['End_Time']).date()
-                car_name = str(row.get('Car', ''))
-                bg_color = car_colors.get(car_name, "#319795")
-                icon = get_car_icon(car_name) if 'get_car_icon' in globals() else "🚗"
-                
-                # ถ้าเป็นวันแรกของช่วงจอง ให้โชว์ชื่อผู้จองเต็มๆ
-                if curr_date == start_d or d == 1 or curr_date.weekday() == 6:
-                    label = f"{icon} {row.get('User', '')}: {row.get('Task', '')}"
+    # วาดปฏิทินด้วย Native Streamlit Elements
+    for week_idx, week in enumerate(weeks):
+        cols = st.columns(7)
+        for day_idx, d in enumerate(week):
+            with cols[day_idx]:
+                if d is not None:
+                    with st.container(border=True):
+                        st.markdown(f"<div style='text-align:center;font-weight:bold;font-size:12px;color:#a0aec0;'>{d}</div>", unsafe_allow_html=True)
+                        curr_date = date(year, month, d)
+                        
+                        if not df_filtered.empty:
+                            day_events = df_filtered[
+                                (pd.to_datetime(df_filtered['Start_Time']).dt.date <= curr_date) & 
+                                (pd.to_datetime(df_filtered['End_Time']).dt.date >= curr_date)
+                            ]
+                            
+                            for idx, row in day_events.iterrows():
+                                start_d = pd.to_datetime(row['Start_Time']).date()
+                                car_name = str(row.get('Car', ''))
+                                icon = get_car_icon(car_name) if 'get_car_icon' in globals() else "🚗"
+                                
+                                # ปรับ Label ตัวหนังสือให้อยู่ตรงกลาง
+                                if curr_date == start_d or d == 1 or curr_date.weekday() == 6:
+                                    btn_label = f"{icon} {row.get('User', '')}"
+                                else:
+                                    btn_label = f"↔ {icon}"
+                                
+                                # ปุ่มกดตอบสนอง (Interactive Button)
+                                if st.button(btn_label, key=f"btn_{year}_{month}_{d}_{idx}", use_container_width=True, help=f"{row.get('User')}: {row.get('Task')}"):
+                                    st.session_state['cal_selected_row'] = row.to_dict()
                 else:
-                    # วันถัดๆ มาให้ขึ้นแถบสีเชื่อมต่อ
-                    label = "‍" # พิมพ์อักขระล่องหนรักษาความสูงแถบ
+                    st.write("")
 
-                html_code += f'<div class="cal-event" style="background-color: {bg_color};" title="{row.get("User")}: {row.get("Task")} ({row.get("Car")})">{label}</div>'
+    # --- 4. POPUP / SHOW DETAILS (ส่วนแสดงรายละเอียดเมื่อกดเลือก) ---
+    if 'cal_selected_row' in st.session_state and st.session_state['cal_selected_row']:
+        sel = st.session_state['cal_selected_row']
+        st.write("---")
+        with st.container(border=True):
+            col_head, col_close = st.columns([0.9, 0.1])
+            with col_head:
+                st.subheader(f"📌 รายละเอียดการจอง: {sel.get('User', '-')}")
+            with col_close:
+                if st.button("❌", key="close_detail"):
+                    st.session_state['cal_selected_row'] = None
+                    st.rerun()
 
-        html_code += '</div>'
-
-    html_code += '</div>'
-    
-    # Render ปฏิทิน HTML
-    st.markdown(html_code, unsafe_allow_html=True)
-
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.write(f"🚗 **รถ/อุปกรณ์:** {sel.get('Car', '-')}")
+                st.write(f"📝 **ชื่องาน:** {sel.get('Task', '-')}")
+            with col_b:
+                st.write(f"📍 **สถานที่:** {sel.get('Location', '-')}")
+                st.write(f"📦 **อุปกรณ์เพิ่มเติม:** {sel.get('Equipment', '-')}")
 
 # --- PAGE: ADMIN & INVENTORY ---
 def page_admin(df_book, df_stock, df_users, sh):
