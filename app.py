@@ -219,7 +219,7 @@ def status_label(percent):
     else: return "🟢 ปกติ"
 
 # --- HELPERS (Booking Calendar) ---
-_CAL_COLOR_EMOJIS = ["🟪", "🟩", "🟧", "🟥", "🟦", "🟨"]
+_CAL_PALETTE = ["#7F77DD", "#1D9E75", "#D85A30", "#3B82F6", "#D4537E", "#F5A524", "#14B8A6", "#8B5CF6"]
 
 def get_car_icon(car_name):
     """ไอคอนตามประเภทรถ ช่วยให้เห็นปุ๊บรู้เลยว่าเป็นรถอะไรโดยไม่ต้องอ่านชื่อเต็ม"""
@@ -232,11 +232,11 @@ def get_car_icon(car_name):
     elif "ส่วนตัว" in car_str: return "🚘"
     return "🚗"
 
-def user_color_emoji(user):
+def user_color_hex(user):
     """แจกสีให้แต่ละคนแบบคงที่ (ไม่ใช้ hash() เพราะสุ่มใหม่ทุกครั้งที่รีสตาร์ทแอป)"""
     s = str(user)
     val = sum(ord(c) for c in s)
-    return _CAL_COLOR_EMOJIS[val % len(_CAL_COLOR_EMOJIS)]
+    return _CAL_PALETTE[val % len(_CAL_PALETTE)]
 
 @st.dialog("รายละเอียดการจอง")
 def show_booking_detail(row):
@@ -252,130 +252,166 @@ def show_booking_detail(row):
         st.rerun()
 
 def render_booking_calendar(df_book, car_options=None):
-    """ปฏิทินรายเดือนแบบ Google Calendar สำหรับดูรายการจองทั้งหมด"""
+    """ปฏิทินรายเดือนแบบ Google Calendar สำหรับดูรายการจองทั้งหมด
+    หมายเหตุ: การใส่สีให้ปุ่มแต่ละแท่งใช้ CSS class 'st-key-<key>' ที่ Streamlit
+    สร้างให้อัตโนมัติเมื่อกำหนด key (ต้องใช้ Streamlit >= 1.31 ขึ้นไป)"""
     if 'cal_year' not in st.session_state:
         now = get_thai_time()
         st.session_state['cal_year'] = now.year
         st.session_state['cal_month'] = now.month
 
-    nav1, nav2, nav3 = st.columns([1, 3, 1])
-    with nav1:
-        if st.button("← เดือนก่อน", use_container_width=True):
-            m, y = st.session_state['cal_month'] - 1, st.session_state['cal_year']
-            if m < 1: m, y = 12, y - 1
-            st.session_state['cal_month'], st.session_state['cal_year'] = m, y
-            st.rerun()
-    with nav3:
-        if st.button("เดือนถัดไป →", use_container_width=True):
-            m, y = st.session_state['cal_month'] + 1, st.session_state['cal_year']
-            if m > 12: m, y = 1, y + 1
-            st.session_state['cal_month'], st.session_state['cal_year'] = m, y
-            st.rerun()
+    cal_box = st.container(border=True)
+    with cal_box:
+        nav1, nav2, nav3 = st.columns([1, 3, 1])
+        with nav1:
+            if st.button("← เดือนก่อน", use_container_width=True):
+                m, y = st.session_state['cal_month'] - 1, st.session_state['cal_year']
+                if m < 1: m, y = 12, y - 1
+                st.session_state['cal_month'], st.session_state['cal_year'] = m, y
+                st.rerun()
+        with nav3:
+            if st.button("เดือนถัดไป →", use_container_width=True):
+                m, y = st.session_state['cal_month'] + 1, st.session_state['cal_year']
+                if m > 12: m, y = 1, y + 1
+                st.session_state['cal_month'], st.session_state['cal_year'] = m, y
+                st.rerun()
 
-    year, month = st.session_state['cal_year'], st.session_state['cal_month']
-    thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
-                   "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
-    with nav2:
-        st.markdown(f"<div style='text-align:center;font-weight:600;padding-top:6px;'>{thai_months[month]} {year + 543}</div>", unsafe_allow_html=True)
+        year, month = st.session_state['cal_year'], st.session_state['cal_month']
+        thai_months = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+                       "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        with nav2:
+            st.markdown(f"<div style='text-align:center;font-weight:700;font-size:18px;padding-top:6px;'>{thai_months[month]} {year + 543}</div>", unsafe_allow_html=True)
 
-    # --- Checkbox Filter รถ ---
-    if car_options:
-        # ย่อชื่อยาวๆ ให้เหลือสั้นแค่บน checkbox แต่ยังกรองด้วยชื่อเต็มเดิม
-        short_label = {
-            "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "🚙 รถส่วนตัว",
-            "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ไม่ใช้รถ (ไม่ยืมรถ)",
-        }
-        if 'cal_car_checks' not in st.session_state:
-            st.session_state['cal_car_checks'] = {c: True for c in car_options}
-        else:
-            for c in car_options:
-                st.session_state['cal_car_checks'].setdefault(c, True)
-
-        f_cols = st.columns(len(car_options))
-        for col, c in zip(f_cols, car_options):
-            with col:
-                st.session_state['cal_car_checks'][c] = st.checkbox(
-                    short_label.get(c, c),
-                    value=st.session_state['cal_car_checks'][c],
-                    key=f"cal_chk_{c}",
-                )
-        st.caption("💡 ติ๊กออกที่ \"📦 ไม่ใช้รถ\" เพื่อดูเฉพาะรายการที่ยืมรถจริง")
         st.write("")
 
-    checked_cars = {c for c, v in st.session_state.get('cal_car_checks', {}).items() if v} if car_options else None
+        # --- Checkbox Filter รถ ---
+        if car_options:
+            short_label = {
+                "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "🚙 รถส่วนตัว",
+                "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ไม่ใช้รถ (ไม่ยืมรถ)",
+            }
+            if 'cal_car_checks' not in st.session_state:
+                st.session_state['cal_car_checks'] = {c: True for c in car_options}
+            else:
+                for c in car_options:
+                    st.session_state['cal_car_checks'].setdefault(c, True)
 
-    days_in_month = calendar.monthrange(year, month)[1]
-    first_weekday = (date(year, month, 1).weekday() + 1) % 7  # ให้อาทิตย์ = 0
-    cells = [None] * first_weekday + list(range(1, days_in_month + 1))
-    while len(cells) % 7 != 0:
-        cells.append(None)
-    weeks = [cells[i:i + 7] for i in range(0, len(cells), 7)]
+            with st.container(border=True):
+                f_cols = st.columns(len(car_options))
+                for col, c in zip(f_cols, car_options):
+                    with col:
+                        st.session_state['cal_car_checks'][c] = st.checkbox(
+                            short_label.get(c, c),
+                            value=st.session_state['cal_car_checks'][c],
+                            key=f"cal_chk_{c}",
+                        )
+                st.caption("💡 ติ๊กออกที่ \"📦 ไม่ใช้รถ\" เพื่อดูเฉพาะรายการที่ยืมรถจริง")
+            st.write("")
 
-    weekday_names = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"]
-    hcols = st.columns(7)
-    for c, name in zip(hcols, weekday_names):
-        c.markdown(f"<div style='text-align:center;font-size:12px;color:gray;'>{name}</div>", unsafe_allow_html=True)
+        checked_cars = {c for c, v in st.session_state.get('cal_car_checks', {}).items() if v} if car_options else None
 
-    df_valid = df_book.dropna(subset=['Start_Time', 'End_Time']) if not df_book.empty else df_book
-    if checked_cars is not None and not df_valid.empty:
-        df_valid = df_valid[df_valid['Car'].isin(checked_cars)]
+        days_in_month = calendar.monthrange(year, month)[1]
+        first_weekday = (date(year, month, 1).weekday() + 1) % 7  # ให้อาทิตย์ = 0
+        cells = [None] * first_weekday + list(range(1, days_in_month + 1))
+        while len(cells) % 7 != 0:
+            cells.append(None)
+        weeks = [cells[i:i + 7] for i in range(0, len(cells), 7)]
 
-    for w_idx, week in enumerate(weeks):
-        if all(d is None for d in week):
-            continue
+        weekday_names = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัสฯ", "ศุกร์", "เสาร์"]
+        hcols = st.columns(7)
+        for i, (c, name) in enumerate(zip(hcols, weekday_names)):
+            txt_color = "#E24B4A" if i == 0 else ("#3B82F6" if i == 6 else "#8A8F98")
+            c.markdown(f"<div style='text-align:center;font-size:12px;font-weight:600;color:{txt_color};padding:6px 0;'>{name}</div>", unsafe_allow_html=True)
+        st.markdown("<div style='border-bottom:1px solid rgba(128,128,128,0.25);margin-bottom:6px;'></div>", unsafe_allow_html=True)
 
-        dcols = st.columns(7)
-        for c, d in zip(dcols, week):
-            c.markdown(f"<div style='font-size:13px;padding:2px 4px;'>{d if d else ''}</div>", unsafe_allow_html=True)
+        df_valid = df_book.dropna(subset=['Start_Time', 'End_Time']) if not df_book.empty else df_book
+        if checked_cars is not None and not df_valid.empty:
+            df_valid = df_valid[df_valid['Car'].isin(checked_cars)]
 
-        placed, lanes = [], []
-        if not df_valid.empty:
-            for idx, row in df_valid.iterrows():
-                ev_start, ev_end = row['Start_Time'].date(), row['End_Time'].date()
-                col_start = col_end = None
-                for i, d in enumerate(week):
-                    if d is None: continue
-                    wd = date(year, month, d)
-                    if ev_start <= wd <= ev_end:
-                        if col_start is None: col_start = i
-                        col_end = i
-                if col_start is None: continue
+        today = date.today()
+        style_rules = []
 
-                lane = 0
-                def overlaps(seg, cs=col_start, ce=col_end):
-                    return not (ce < seg[0] or cs > seg[1])
-                while lane < len(lanes) and any(overlaps(seg) for seg in lanes[lane]):
-                    lane += 1
-                if lane == len(lanes): lanes.append([])
-                lanes[lane].append((col_start, col_end))
-                placed.append({'colStart': col_start, 'colEnd': col_end, 'lane': lane, 'row': row, 'idx': idx})
+        for w_idx, week in enumerate(weeks):
+            if all(d is None for d in week):
+                continue
 
-        max_lane = max([p['lane'] for p in placed], default=-1)
-        for lane_i in range(max_lane + 1):
-            lane_events = sorted([p for p in placed if p['lane'] == lane_i], key=lambda x: x['colStart'])
-            widths, slots, cursor = [], [], 0
-            for ev in lane_events:
-                gap = ev['colStart'] - cursor
-                if gap > 0:
-                    widths.append(gap); slots.append(None)
-                widths.append(ev['colEnd'] - ev['colStart'] + 1); slots.append(ev)
-                cursor = ev['colEnd'] + 1
-            if cursor < 7:
-                widths.append(7 - cursor); slots.append(None)
+            dcols = st.columns(7)
+            for i, (c, d) in enumerate(zip(dcols, week)):
+                if d is None:
+                    c.write("")
+                    continue
+                wd = date(year, month, d)
+                is_today = wd == today
+                num_color = "#E24B4A" if i == 0 else ("#3B82F6" if i == 6 else "inherit")
+                if is_today:
+                    c.markdown(
+                        f"<div style='display:inline-block;background:#6366F1;color:#fff;font-weight:700;"
+                        f"font-size:13px;width:24px;height:24px;line-height:24px;text-align:center;"
+                        f"border-radius:50%;'>{d}</div>", unsafe_allow_html=True)
+                else:
+                    c.markdown(f"<div style='font-size:13px;font-weight:500;color:{num_color};padding:2px 6px;'>{d}</div>", unsafe_allow_html=True)
 
-            lane_cols = st.columns(widths)
-            for col, slot in zip(lane_cols, slots):
-                with col:
-                    if slot is None:
-                        st.write("")
-                    else:
-                        row = slot['row']
-                        label = f"{user_color_emoji(row['User'])}{get_car_icon(row['Car'])} {row['User']}: {row['Task']}"
-                        if len(label) > 26: label = label[:24] + "…"
-                        if st.button(label, key=f"cal_ev_{w_idx}_{lane_i}_{slot['idx']}", use_container_width=True):
-                            st.session_state['cal_selected_idx'] = slot['idx']
-                            st.rerun()
-        st.markdown("<div style='border-bottom:1px solid rgba(128,128,128,0.2);margin:2px 0 8px;'></div>", unsafe_allow_html=True)
+            placed, lanes = [], []
+            if not df_valid.empty:
+                for idx, row in df_valid.iterrows():
+                    ev_start, ev_end = row['Start_Time'].date(), row['End_Time'].date()
+                    col_start = col_end = None
+                    for i, d in enumerate(week):
+                        if d is None: continue
+                        wd = date(year, month, d)
+                        if ev_start <= wd <= ev_end:
+                            if col_start is None: col_start = i
+                            col_end = i
+                    if col_start is None: continue
+
+                    lane = 0
+                    def overlaps(seg, cs=col_start, ce=col_end):
+                        return not (ce < seg[0] or cs > seg[1])
+                    while lane < len(lanes) and any(overlaps(seg) for seg in lanes[lane]):
+                        lane += 1
+                    if lane == len(lanes): lanes.append([])
+                    lanes[lane].append((col_start, col_end))
+                    placed.append({'colStart': col_start, 'colEnd': col_end, 'lane': lane, 'row': row, 'idx': idx})
+
+            max_lane = max([p['lane'] for p in placed], default=-1)
+            for lane_i in range(max_lane + 1):
+                lane_events = sorted([p for p in placed if p['lane'] == lane_i], key=lambda x: x['colStart'])
+                widths, slots, cursor = [], [], 0
+                for ev in lane_events:
+                    gap = ev['colStart'] - cursor
+                    if gap > 0:
+                        widths.append(gap); slots.append(None)
+                    widths.append(ev['colEnd'] - ev['colStart'] + 1); slots.append(ev)
+                    cursor = ev['colEnd'] + 1
+                if cursor < 7:
+                    widths.append(7 - cursor); slots.append(None)
+
+                lane_cols = st.columns(widths, gap="small")
+                for col, slot in zip(lane_cols, slots):
+                    with col:
+                        if slot is None:
+                            st.write("")
+                        else:
+                            row = slot['row']
+                            btn_key = f"cal_ev_{year}_{month}_{w_idx}_{lane_i}_{slot['idx']}"
+                            color = user_color_hex(row['User'])
+                            label = f"{get_car_icon(row['Car'])} {row['User']}: {row['Task']}"
+                            style_rules.append(
+                                f".st-key-{btn_key} button {{"
+                                f"background-color:{color} !important;color:#fff !important;border:none !important;"
+                                f"text-align:left !important;justify-content:flex-start !important;"
+                                f"font-size:12px !important;font-weight:500 !important;"
+                                f"padding:3px 10px !important;white-space:nowrap !important;overflow:hidden !important;"
+                                f"text-overflow:ellipsis !important;display:block !important;border-radius:5px !important;}}"
+                                f".st-key-{btn_key} button:hover {{filter:brightness(1.12) !important;color:#fff !important;}}"
+                            )
+                            if st.button(label, key=btn_key, use_container_width=True):
+                                st.session_state['cal_selected_idx'] = slot['idx']
+                                st.rerun()
+            st.markdown("<div style='border-bottom:1px solid rgba(128,128,128,0.15);margin:4px 0 10px;'></div>", unsafe_allow_html=True)
+
+        if style_rules:
+            st.markdown(f"<style>{''.join(style_rules)}</style>", unsafe_allow_html=True)
 
     if 'cal_selected_idx' in st.session_state:
         sel_idx = st.session_state['cal_selected_idx']
