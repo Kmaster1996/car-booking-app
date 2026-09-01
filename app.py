@@ -484,3 +484,589 @@ try:
 
 except Exception as e:
     st.error(f"Error: {e}")
+
+
+
+
+
+
+
+
+import os
+import time
+import uuid
+import socket
+import threading
+from datetime import datetime, date
+
+import pymysql
+import pymysql.cursors
+from flask import Flask, request, jsonify, g, render_template
+
+app = Flask(__name__)
+
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "mysql")
+MYSQL_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
+MYSQL_USER = os.environ.get("MYSQL_USER", "root")
+MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
+MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "car_service_tracker")
+
+# --- ตั้งค่าแจ้งเตือนไป LAN receiver (แยกต่างหากจาก popup ในหน้าเว็บ) ---
+# ใส่ IP ของเครื่องที่เปิด receiver.py รออยู่ คั่นด้วย comma ถ้ามีหลายเครื่อง
+# เช่น NOTIFY_RECEIVER_IPS=192.168.1.50,192.168.1.51
+NOTIFY_RECEIVER_IPS = [ip.strip() for ip in os.environ.get("NOTIFY_RECEIVER_IPS", "192.168.1.126").split(",") if ip.strip()]
+NOTIFY_RECEIVER_PORT = int(os.environ.get("NOTIFY_RECEIVER_PORT", "5001"))  # ต้องตรงกับ PORT ใน receiver.py
+NOTIFY_CHECK_HOUR = int(os.environ.get("NOTIFY_CHECK_HOUR", "11"))  # เช็ควันละครั้ง ตอนกี่โมง (24hr)
+NOTIFY_THRESHOLD = 0.75  # เกณฑ์ "ใกล้ถึงกำหนด" เดียวกับที่ใช้ในหน้าเว็บ (คือ warn threshold)
+
+
+def get_db():
+    if "db" not in g:
+        g.db = pymysql.connect(
+            host=MYSQL_HOST,
+            port=MYSQL_PORT,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DATABASE,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False,
+        )
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(exception=None):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+def query_all(sql, params=()):
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def query_one(sql, params=()):
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchone()
+
+
+def execute(sql, params=()):
+    db = get_db()
+    with db.cursor() as cur:
+        cur.execute(sql, params)
+    db.commit()
+
+
+def ensure_database():
+    """Create the target database on the shared MySQL server if it doesn't exist yet.
+    If the user doesn't have CREATE privileges (e.g. a restricted account on a shared
+    server), this just logs a warning and assumes the database already exists."""
+    try:
+        conn = pymysql.connect(
+            host=MYSQL_HOST, port=MYSQL_PORT, user=MYSQL_USER,
+            password=MYSQL_PASSWORD, charset="utf8mb4",
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                f"CREATE DATABASE IF NOT EXISTS `{MYSQL_DATABASE}` "
+                f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[warn] ไม่สามารถสร้างฐานข้อมูล '{MYSQL_DATABASE}' อัตโนมัติ "
+              f"(อาจไม่มีสิทธิ์ หรือมีฐานข้อมูลอยู่แล้ว): {e}")
+
+
+def wait_for_mysql(max_attempts=15, delay_seconds=3):
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            conn = pymysql.connect(
+                host=MYSQL_HOST, port=MYSQL_PORT, user=MYSQL_USER,
+                password=MYSQL_PASSWORD, charset="utf8mb4",
+            )
+            conn.close()
+            return
+        except Exception as e:
+            last_err = e
+            print(f"[info] รอ MySQL ({MYSQL_HOST}:{MYSQL_PORT}) ... ความพยายามที่ {attempt}/{max_attempts}")
+            time.sleep(delay_seconds)
+    raise RuntimeError(f"เชื่อมต่อ MySQL ไม่สำเร็จหลังจากลองหลายครั้ง: {last_err}")
+
+
+def _add_column_if_missing(cur, table, column, ddl):
+    """Add a column to an existing table if it doesn't already exist yet.
+    Uses information_schema so this works across MySQL versions that don't
+    support 'ADD COLUMN IF NOT EXISTS', and keeps existing deployments safe
+    to upgrade in place."""
+    cur.execute(
+        """
+        SELECT COUNT(*) AS c FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s AND column_name = %s
+        """,
+        (MYSQL_DATABASE, table, column),
+    )
+    row = cur.fetchone()
+    exists = row[0] if not isinstance(row, dict) else row["c"]
+    if not exists:
+        cur.execute(f"ALTER TABLE `{table}` ADD COLUMN {ddl}")
+
+
+def init_db():
+    wait_for_mysql()
+    ensure_database()
+    conn = pymysql.connect(
+        host=MYSQL_HOST, port=MYSQL_PORT, user=MYSQL_USER,
+        password=MYSQL_PASSWORD, database=MYSQL_DATABASE, charset="utf8mb4",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS vehicles (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                plate VARCHAR(64),
+                current_mileage DOUBLE DEFAULT 0
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS items (
+                id VARCHAR(36) PRIMARY KEY,
+                vehicle_id VARCHAR(36) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                last_mileage DOUBLE DEFAULT 0,
+                interval_km DOUBLE DEFAULT 0,
+                last_date DATE NULL,
+                interval_months DOUBLE DEFAULT 0,
+                FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mileage_logs (
+                id VARCHAR(36) PRIMARY KEY,
+                vehicle_id VARCHAR(36) NOT NULL,
+                old_mileage DOUBLE,
+                new_mileage DOUBLE,
+                updated_by VARCHAR(255),
+                created_at DATETIME,
+                FOREIGN KEY (vehicle_id) REFERENCES vehicles(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        # ระบบแจ้งเตือนการชาร์จแบต — สำหรับอุปกรณ์ใช้แบตทั่วไป (รีโมท ไฟฉาย เมาส์ ฯลฯ)
+        # เป็นระบบที่แยกต่างหากจากรถโดยสิ้นเชิง ไม่เกี่ยวข้องกับตาราง vehicles/items ด้านบน
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS devices (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                interval_days DOUBLE DEFAULT 0,
+                last_charged_date DATE NULL,
+                notes VARCHAR(255),
+                serial_number VARCHAR(128)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        # เผื่อฐานข้อมูลเดิมที่ยังไม่มีคอลัมน์นี้ (deploy ทับเวอร์ชันก่อนหน้า)
+        _add_column_if_missing(cur, "devices", "serial_number", "serial_number VARCHAR(128) NULL")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_charge_logs (
+                id VARCHAR(36) PRIMARY KEY,
+                device_id VARCHAR(36) NOT NULL,
+                old_date DATE NULL,
+                new_date DATE,
+                updated_by VARCHAR(255),
+                created_at DATETIME,
+                FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+    conn.commit()
+    conn.close()
+
+
+# ======================================================================
+# ระบบแจ้งเตือนไป LAN receiver — เช็ควันละครั้ง ถ้าพบรายการ "ใกล้ถึงกำหนด"
+# ขึ้นไป (percent >= 0.75 เหมือนเกณฑ์ popup ในหน้าเว็บ) จะส่งข้อความ
+# ไปเด้ง popup ที่เครื่อง receiver ทุกเครื่องที่ตั้งค่าไว้ใน NOTIFY_RECEIVER_IPS
+# แยกต่างหากจาก popup ในหน้าเว็บโดยสิ้นเชิง ไม่กระทบกัน
+# ======================================================================
+
+def send_lan_notification(message):
+    """ส่งข้อความไปเด้ง popup ที่เครื่อง receiver ทุกเครื่องที่ตั้งค่าไว้"""
+    if not NOTIFY_RECEIVER_IPS:
+        return
+    for ip in NOTIFY_RECEIVER_IPS:
+        try:
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.settimeout(5)
+            client.connect((ip, NOTIFY_RECEIVER_PORT))
+            client.send(message.encode("utf-8"))
+            client.close()
+        except Exception as e:
+            print(f"[warn] ส่งแจ้งเตือนไป {ip}:{NOTIFY_RECEIVER_PORT} ไม่สำเร็จ: {e}")
+
+
+def _item_percent(item, current_mileage):
+    """คำนวณ percent เหมือนฟังก์ชัน computeStatus() ฝั่ง JS ใน index.html"""
+    percent_km = None
+    percent_date = None
+    if item.get("interval_km") and item["interval_km"] > 0:
+        used = current_mileage - (item.get("last_mileage") or 0)
+        percent_km = used / item["interval_km"]
+    if item.get("interval_months") and item["interval_months"] > 0 and item.get("last_date"):
+        months_used = (date.today() - item["last_date"]).days / 30.4375
+        percent_date = months_used / item["interval_months"]
+    if percent_km is not None and percent_date is not None:
+        return max(percent_km, percent_date)
+    if percent_km is not None:
+        return percent_km
+    if percent_date is not None:
+        return percent_date
+    return 0
+
+
+def _device_percent(device):
+    """คำนวณ percent เหมือนฟังก์ชัน computeDeviceStatus() ฝั่ง JS ใน index.html"""
+    if not device.get("last_charged_date") or not device.get("interval_days") or device["interval_days"] <= 0:
+        return 1 if not device.get("last_charged_date") else 0
+    days_since = (date.today() - device["last_charged_date"]).days
+    return days_since / device["interval_days"]
+
+
+def check_and_notify():
+    """เช็คว่ามีรายการรถ/อุปกรณ์ไหนใกล้/ถึงกำหนดบ้าง แล้วรวมเป็นข้อความเดียวส่งไป LAN"""
+    lines = []
+
+    vehicles = query_all("SELECT * FROM vehicles")
+    for v in vehicles:
+        items = query_all("SELECT * FROM items WHERE vehicle_id = %s", (v["id"],))
+        for item in items:
+            percent = _item_percent(item, v["current_mileage"])
+            if percent >= NOTIFY_THRESHOLD:
+                status = "ถึงกำหนดแล้ว" if percent >= 1 else "ใกล้ถึงกำหนด"
+                lines.append(f"รถ {v['name']} - {item['name']}: {status}")
+
+    devices = query_all("SELECT * FROM devices")
+    for d in devices:
+        percent = _device_percent(d)
+        if percent >= NOTIFY_THRESHOLD:
+            status = "ถึงกำหนดแล้ว" if percent >= 1 else "ใกล้ถึงกำหนด"
+            lines.append(f"อุปกรณ์ {d['name']}: {status}")
+
+    if lines:
+        message = "รายการที่ต้องดำเนินการ:\n" + "\n".join(lines)
+        send_lan_notification(message)
+        print(f"[info] ส่งแจ้งเตือน LAN แล้ว ({len(lines)} รายการ)")
+    else:
+        print("[info] เช็คแล้ว ไม่มีรายการใกล้ถึงกำหนด")
+
+
+def _daily_notify_loop():
+    """เช็คทันที 1 ครั้งตอน server เริ่มทำงาน (กันปัญหา start หลังเวลาที่ตั้งไว้แล้วต้องรอข้ามวัน)
+    จากนั้นวนเช็คว่าถึงเวลา NOTIFY_CHECK_HOUR ของวันใหม่หรือยัง (เช็ควันละครั้งเท่านั้น
+    ไม่ใช่ query ฐานข้อมูลถี่ๆ) ทำงานอยู่เบื้องหลังตลอดเวลาที่ server รันอยู่"""
+    try:
+        with app.app_context():
+            print("[info] เช็คแจ้งเตือนครั้งแรกตอน server เริ่มทำงาน...")
+            check_and_notify()
+    except Exception as e:
+        print(f"[warn] เช็คแจ้งเตือนล้มเหลว: {e}")
+    last_run_date = datetime.now().date()  # กันไม่ให้เช็คซ้ำอีกรอบถ้าวันนี้ตรงกับ NOTIFY_CHECK_HOUR พอดี
+
+    while True:
+        now = datetime.now()
+        if now.hour == NOTIFY_CHECK_HOUR and now.date() != last_run_date:
+            try:
+                with app.app_context():
+                    check_and_notify()
+            except Exception as e:
+                print(f"[warn] เช็คแจ้งเตือนล้มเหลว: {e}")
+            last_run_date = now.date()
+        time.sleep(600)  # เช็คทุก 10 นาทีว่าเข้าเวลาที่ตั้งไว้หรือยัง
+
+
+def vehicle_to_dict(row, items):
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "plate": row["plate"] or "",
+        "currentMileage": row["current_mileage"],
+        "items": items,
+    }
+
+
+def item_to_dict(row):
+    return {
+        "id": row["id"],
+        "vehicleId": row["vehicle_id"],
+        "name": row["name"],
+        "lastMileage": row["last_mileage"],
+        "intervalKm": row["interval_km"],
+        "lastDate": str(row["last_date"]) if row["last_date"] else None,
+        "intervalMonths": row["interval_months"],
+    }
+
+
+def device_to_dict(row):
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "intervalDays": row["interval_days"],
+        "lastChargedDate": str(row["last_charged_date"]) if row["last_charged_date"] else None,
+        "notes": row["notes"] or "",
+        "serialNumber": row.get("serial_number") or "",
+    }
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/api/vehicles", methods=["GET"])
+def list_vehicles():
+    vehicles = query_all("SELECT * FROM vehicles")
+    result = []
+    for v in vehicles:
+        items = query_all("SELECT * FROM items WHERE vehicle_id = %s", (v["id"],))
+        result.append(vehicle_to_dict(v, [item_to_dict(i) for i in items]))
+    return jsonify(result)
+
+
+@app.route("/api/vehicles", methods=["POST"])
+def create_vehicle():
+    data = request.get_json(force=True)
+    vid = str(uuid.uuid4())
+    execute(
+        "INSERT INTO vehicles (id, name, plate, current_mileage) VALUES (%s, %s, %s, %s)",
+        (vid, data.get("name", "รถของฉัน"), data.get("plate", ""), data.get("currentMileage", 0)),
+    )
+    return jsonify({"id": vid}), 201
+
+
+@app.route("/api/vehicles/<vid>", methods=["PUT"])
+def update_vehicle(vid):
+    data = request.get_json(force=True)
+    execute(
+        "UPDATE vehicles SET name = %s, plate = %s, current_mileage = %s WHERE id = %s",
+        (data.get("name"), data.get("plate", ""), data.get("currentMileage", 0), vid),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/vehicles/<vid>", methods=["DELETE"])
+def delete_vehicle(vid):
+    execute("DELETE FROM items WHERE vehicle_id = %s", (vid,))
+    execute("DELETE FROM mileage_logs WHERE vehicle_id = %s", (vid,))
+    execute("DELETE FROM vehicles WHERE id = %s", (vid,))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/vehicles/<vid>/mileage", methods=["POST"])
+def update_mileage(vid):
+    data = request.get_json(force=True)
+    new_mileage = data.get("mileage")
+    updated_by = (data.get("updatedBy") or "").strip()
+    if not updated_by:
+        return jsonify({"error": "updatedBy is required"}), 400
+    row = query_one("SELECT current_mileage FROM vehicles WHERE id = %s", (vid,))
+    if row is None:
+        return jsonify({"error": "vehicle not found"}), 404
+    old_mileage = row["current_mileage"]
+    execute("UPDATE vehicles SET current_mileage = %s WHERE id = %s", (new_mileage, vid))
+    log_id = str(uuid.uuid4())
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    execute(
+        """INSERT INTO mileage_logs (id, vehicle_id, old_mileage, new_mileage, updated_by, created_at)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (log_id, vid, old_mileage, new_mileage, updated_by, created_at),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/vehicles/<vid>/mileage-log", methods=["GET"])
+def get_mileage_log(vid):
+    rows = query_all(
+        "SELECT * FROM mileage_logs WHERE vehicle_id = %s ORDER BY created_at DESC, id DESC",
+        (vid,),
+    )
+    return jsonify(
+        [
+            {
+                "id": r["id"],
+                "oldMileage": r["old_mileage"],
+                "newMileage": r["new_mileage"],
+                "updatedBy": r["updated_by"],
+                "createdAt": str(r["created_at"]),
+            }
+            for r in rows
+        ]
+    )
+
+
+@app.route("/api/vehicles/<vid>/items", methods=["POST"])
+def create_item(vid):
+    data = request.get_json(force=True)
+    iid = str(uuid.uuid4())
+    execute(
+        """INSERT INTO items (id, vehicle_id, name, last_mileage, interval_km, last_date, interval_months)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (
+            iid,
+            vid,
+            data.get("name"),
+            data.get("lastMileage", 0),
+            data.get("intervalKm", 0),
+            data.get("lastDate") or None,
+            data.get("intervalMonths", 0),
+        ),
+    )
+    return jsonify({"id": iid}), 201
+
+
+@app.route("/api/items/<iid>", methods=["PUT"])
+def update_item(iid):
+    data = request.get_json(force=True)
+    execute(
+        """UPDATE items SET name = %s, last_mileage = %s, interval_km = %s, last_date = %s, interval_months = %s
+           WHERE id = %s""",
+        (
+            data.get("name"),
+            data.get("lastMileage", 0),
+            data.get("intervalKm", 0),
+            data.get("lastDate") or None,
+            data.get("intervalMonths", 0),
+            iid,
+        ),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/items/<iid>", methods=["DELETE"])
+def delete_item(iid):
+    execute("DELETE FROM items WHERE id = %s", (iid,))
+    return jsonify({"ok": True})
+
+
+init_db()
+
+if NOTIFY_RECEIVER_IPS:
+    threading.Thread(target=_daily_notify_loop, daemon=True).start()
+    print(f"[info] เปิดใช้งานแจ้งเตือน LAN ไปยัง {NOTIFY_RECEIVER_IPS} "
+          f"(port {NOTIFY_RECEIVER_PORT}) เวลา {NOTIFY_CHECK_HOUR}:00 ทุกวัน")
+else:
+    print("[info] ไม่ได้ตั้งค่า NOTIFY_RECEIVER_IPS - ปิดใช้งานแจ้งเตือน LAN "
+          "(popup ในหน้าเว็บยังทำงานตามปกติ)")
+
+# ======================================================================
+# ระบบแจ้งเตือนการชาร์จแบต — สำหรับอุปกรณ์ใช้แบตทั่วไป (รีโมท ไฟฉาย เมาส์ ฯลฯ)
+# แยกเป็นคนละระบบจากการเช็คระยะรถด้านบนโดยสิ้นเชิง ไม่มีความเกี่ยวข้องกับ vehicles/items
+# ======================================================================
+
+@app.route("/api/devices", methods=["GET"])
+def list_devices():
+    rows = query_all("SELECT * FROM devices ORDER BY name")
+    return jsonify([device_to_dict(r) for r in rows])
+
+
+@app.route("/api/devices", methods=["POST"])
+def create_device():
+    data = request.get_json(force=True)
+    did = str(uuid.uuid4())
+    execute(
+        """INSERT INTO devices (id, name, interval_days, last_charged_date, notes, serial_number)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (
+            did,
+            data.get("name", "อุปกรณ์ใหม่"),
+            data.get("intervalDays", 0),
+            data.get("lastChargedDate") or None,
+            data.get("notes", ""),
+            data.get("serialNumber", ""),
+        ),
+    )
+    return jsonify({"id": did}), 201
+
+
+@app.route("/api/devices/<did>", methods=["PUT"])
+def update_device(did):
+    data = request.get_json(force=True)
+    execute(
+        """UPDATE devices SET name = %s, interval_days = %s, last_charged_date = %s, notes = %s, serial_number = %s
+           WHERE id = %s""",
+        (
+            data.get("name"),
+            data.get("intervalDays", 0),
+            data.get("lastChargedDate") or None,
+            data.get("notes", ""),
+            data.get("serialNumber", ""),
+            did,
+        ),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/devices/<did>", methods=["DELETE"])
+def delete_device(did):
+    execute("DELETE FROM device_charge_logs WHERE device_id = %s", (did,))
+    execute("DELETE FROM devices WHERE id = %s", (did,))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/devices/<did>/charge", methods=["POST"])
+def charge_device(did):
+    data = request.get_json(force=True)
+    updated_by = (data.get("updatedBy") or "").strip()
+    if not updated_by:
+        return jsonify({"error": "updatedBy is required"}), 400
+    charged_date = data.get("chargedDate") or datetime.now().strftime("%Y-%m-%d")
+    row = query_one("SELECT last_charged_date FROM devices WHERE id = %s", (did,))
+    if row is None:
+        return jsonify({"error": "device not found"}), 404
+    old_date = row["last_charged_date"]
+    execute("UPDATE devices SET last_charged_date = %s WHERE id = %s", (charged_date, did))
+    log_id = str(uuid.uuid4())
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    execute(
+        """INSERT INTO device_charge_logs (id, device_id, old_date, new_date, updated_by, created_at)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (log_id, did, old_date, charged_date, updated_by, created_at),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/devices/<did>/charge-log", methods=["GET"])
+def get_device_charge_log(did):
+    rows = query_all(
+        "SELECT * FROM device_charge_logs WHERE device_id = %s ORDER BY created_at DESC, id DESC",
+        (did,),
+    )
+    return jsonify(
+        [
+            {
+                "id": r["id"],
+                "oldDate": str(r["old_date"]) if r["old_date"] else None,
+                "newDate": str(r["new_date"]) if r["new_date"] else None,
+                "updatedBy": r["updated_by"],
+                "createdAt": str(r["created_at"]),
+            }
+            for r in rows
+        ]
+    )
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
