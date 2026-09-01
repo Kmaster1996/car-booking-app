@@ -219,7 +219,7 @@ def get_car_icon(car_name):
         return "🚙"  # SUV 7 ที่นั่ง
     elif "D-max" in car_str:
         return "🛻"  # รถกระบะ 4 ประตู
-    elif "Geely" in car_str:
+    elif "Geele" in car_str:
         return "⚡"  # รถไฟฟ้า EV
     elif "Jazz" in car_str:
         return "🚗"  # รถเก๋ง
@@ -281,7 +281,7 @@ def render_booking_calendar(df_book, car_options=None):
             "Honda Jazz 2019": "🚗 Honda Jazz",
             "Isuzu Mu-X": "🚙 Isuzu Mu-X",
             "Isuzu D-max 4 Doors": "🛻 Isuzu D-max",
-            "Geely EX5": "⚡ Geely Ex5",
+            "Geele-1": "⚡ Geele-1",
             "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ยืมเฉพาะของ",
         }
 
@@ -495,7 +495,7 @@ def page_car_booking(data, sh):
         "Honda Jazz 2019": {"max_seats": 5, "cargo_score": 1500, "type": "company"},
         "Isuzu Mu-X": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "Isuzu D-max 4 Doors": {"max_seats": 5, "cargo_score": 2200, "type": "company"},
-        "Geely EX5": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
+        "Geele-1": {"max_seats": 7, "cargo_score": 1800, "type": "company"},
         "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": {"max_seats": 99, "cargo_score": 9999, "type": "no_car"}
     }
 
@@ -759,33 +759,67 @@ def page_car_maintenance(data, sh):
     tab1, tab2, tab3, tab4 = st.tabs(["📊 ภาพรวม", "🚗 รถยนต์", "🔋 อุปกรณ์แบต", "📜 ประวัติ"])
 
     # --- TAB 1: DASHBOARD ---
+    # --- TAB 1: DASHBOARD (UI Redesign) ---
     with tab1:
-        st.subheader("สถานะรถยนต์")
+        st.subheader("🚗 ภาพรวมสถานะรถยนต์")
         if df_vehicles.empty:
-            st.info("ยังไม่มีข้อมูลรถ (ไปเพิ่มที่แท็บ 'รถยนต์')")
+            st.info("ยังไม่มีข้อมูลรถในระบบ")
         else:
-            for _, v in df_vehicles.iterrows():
+            # แบ่งการแสดงผลรถยนต์ออกเป็น Grid (2 คอลัมน์ต่อแถว) เพื่อความสบายตา
+            v_cols = st.columns(2)
+            for idx, (_, v) in enumerate(df_vehicles.iterrows()):
                 items = df_mitems[df_mitems['VehicleID'] == v['ID']]
-                st.markdown(f"**🚗 {v['Name']}** ({v['Plate']}) — เลขไมล์ปัจจุบัน: {int(v['CurrentMileage']):,} กม.")
-                if items.empty:
-                    st.caption("ไม่มีรายการบำรุงรักษา")
-                else:
-                    cols = st.columns(3)
-                    for i, (_, it) in enumerate(items.iterrows()):
-                        pct = compute_item_percent(it, v['CurrentMileage'])
-                        with cols[i % 3]:
-                            st.metric(label=it['Name'], value=status_label(pct), delta=f"{pct*100:.0f}%")
-                st.divider()
+                
+                with v_cols[idx % 2]:
+                    with st.container(border=True):
+                        # Header ของ Card รถยนต์
+                        car_icon = get_car_icon(v['Name'])
+                        st.markdown(f"### {car_icon} {v['Name']}")
+                        st.caption(f"🆔 **ทะเบียน:** {v['Plate'] or '-'} | 🛣️ **เลขไมล์:** {int(v['CurrentMileage']):,} กม.")
+                        st.divider()
 
-        st.subheader("สถานะอุปกรณ์แบต")
+                        if items.empty:
+                            st.caption("🟢 สภาพปกติ (ไม่มีรายการบำรุงรักษาที่ตั้งไว้)")
+                        else:
+                            for _, it in items.iterrows():
+                                pct = compute_item_percent(it, v['CurrentMileage'])
+                                pct_display = min(pct, 1.0) # สำหรับ Progress Bar
+                                
+                                # กำหนดสีและ Badge
+                                if pct >= 1.0:
+                                    status_badge = f":red[🔴 ถึงกำหนดแล้ว ({int(pct*100)}%)]"
+                                elif pct >= 0.75:
+                                    status_badge = f":orange[🟠 ใกล้ถึงกำหนด ({int(pct*100)}%)]"
+                                else:
+                                    status_badge = f":green[🟢 ปกติ ({int(pct*100)}%)]"
+
+                                st.markdown(f"**{it['Name']}** — {status_badge}")
+                                st.progress(pct_display)
+
+        st.divider()
+        st.subheader("🔋 ภาพรวมอุปกรณ์แบตเตอรี่")
         if df_devices.empty:
             st.info("ยังไม่มีข้อมูลอุปกรณ์")
         else:
-            cols = st.columns(4)
-            for i, (_, d) in enumerate(df_devices.iterrows()):
+            d_cols = st.columns(3)
+            for idx, (_, d) in enumerate(df_devices.iterrows()):
                 pct = compute_device_percent(d)
-                with cols[i % 4]:
-                    st.metric(label=d['Name'], value=status_label(pct))
+                pct_display = min(pct, 1.0)
+                
+                with d_cols[idx % 3]:
+                    with st.container(border=True):
+                        st.markdown(f"**📦 {d['Name']}**")
+                        last_c = d['LastChargedDate'].strftime('%d/%m/%Y') if pd.notna(d['LastChargedDate']) else "ยังไม่เคยชาร์จ"
+                        st.caption(f"ชาร์จล่าสุด: {last_c}")
+                        
+                        if pct >= 1.0:
+                            st.markdown(":red[🔴 ต้องชาร์จแบตเตอรี่]")
+                        elif pct >= 0.75:
+                            st.markdown(":orange[🟠 ใกล้ครบกำหนดชาร์จ]")
+                        else:
+                            st.markdown(":green[🟢 แบตเตอรี่พร้อมใช้งาน]")
+                            
+                        st.progress(pct_display)
 
     # --- TAB 2: VEHICLES ---
     with tab2:
