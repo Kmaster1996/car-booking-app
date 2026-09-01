@@ -241,7 +241,7 @@ def show_booking_detail(row):
         st.session_state.pop('cal_selected_idx', None)
         st.rerun()
 
-def render_booking_calendar(df_book):
+def render_booking_calendar(df_book, car_options=None, **kwargs):
     if df_book.empty:
         st.info("ไม่มีรายการจองในระบบ")
         return
@@ -259,9 +259,8 @@ def render_booking_calendar(df_book):
     events = []
     for idx, row in df_book.iterrows():
         car_name = str(row.get('Car', ''))
-        color = car_colors.get(car_name, "#319795") # สีเริ่มต้นถ้าไม่ตรงเงื่อนไข
+        color = car_colors.get(car_name, "#319795")
         
-        # ดึงไอคอนรถ (ถ้ามีฟังก์ชัน get_car_icon)
         icon = get_car_icon(car_name) if 'get_car_icon' in globals() else "🚗"
         
         events.append({
@@ -280,7 +279,7 @@ def render_booking_calendar(df_book):
             }
         })
 
-    # 3. ตั้งค่าตัวปฏิทิน (Header, Views, ภาษา)
+    # 3. ตั้งค่าตัวปฏิทิน
     calendar_options = {
         "editable": False,
         "selectable": True,
