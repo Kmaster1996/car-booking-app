@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, date
-import calendar
+import calendar as cal_mod
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
@@ -303,7 +303,8 @@ def render_booking_calendar(df_book, car_options=None, **kwargs):
     for c, name in zip(hcols, weekday_names):
         c.markdown(f"<div style='text-align:center;font-weight:bold;padding:4px;background-color:#1e1e1e;color:#fff;border-radius:4px;'>{name}</div>", unsafe_allow_html=True)
 
-    days_in_month = calendar.monthrange(year, month)[1]
+    # ของใหม่
+    days_in_month = cal_mod.monthrange(year, month)[1]
     first_weekday = (date(year, month, 1).weekday() + 1) % 7
     cells = [None] * first_weekday + list(range(1, days_in_month + 1))
     while len(cells) % 7 != 0: cells.append(None)
