@@ -81,7 +81,12 @@ def load_data():
             df_book['Start_Time'] = pd.to_datetime(df_book['Start_Time'].astype(str), errors='coerce')
             df_book['End_Time'] = pd.to_datetime(df_book['End_Time'].astype(str), errors='coerce')
             df_book = df_book.dropna(subset=['Start_Time', 'End_Time'])
-            if 'Car' in df_book.columns: df_book['Car'] = df_book['Car'].astype(str).str.strip()
+            if 'Car' in df_book.columns:
+                df_book['Car'] = df_book['Car'].astype(str).str.strip()
+                # แปลงชื่อรถรุ่นเก่าที่เคยเปลี่ยนชื่อมาแล้ว ให้ตรงกับชื่อปัจจุบันเสมอ
+                # (กันไม่ให้รายการจองเก่าหายไปจากปฏิทิน เพราะชื่อรถไม่ตรงกับตัวเลือกปัจจุบัน)
+                _CAR_NAME_ALIASES = {"Geele-1": "Geely Ex5"}
+                df_book['Car'] = df_book['Car'].replace(_CAR_NAME_ALIASES)
             if 'Equipment' in df_book.columns: df_book['Equipment'] = df_book['Equipment'].astype(str)
             df_book['Display'] = df_book.apply(lambda x: f"{x['User']} | {x['Car']} | {x['Start_Time'].strftime('%d/%m %H:%M')}", axis=1)
     except:
@@ -252,7 +257,7 @@ _CAR_SHORT_NAME = {
     "Honda Jazz 2019": "Jazz",
     "Isuzu Mu-X": "Mu-X",
     "Isuzu D-max 4 Doors": "D-max",
-    "Geely Ex5": "Geely",
+    "Geely Ex5": "Ex5",
     "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "ส่วนตัว",
     "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "ไม่ใช้รถ",
 }
@@ -271,7 +276,7 @@ def get_car_icon(car_name):
     car_str = str(car_name)
     if "Mu-X" in car_str: return "🚙"
     elif "D-max" in car_str: return "🛻"
-    elif "Geely" in car_str: return "⚡"
+    elif "Geely" in car_str or "Geele" in car_str: return "⚡"
     elif "Jazz" in car_str: return "🚗"
     elif "ยืมเฉพาะของ" in car_str or "ไม่ใช้รถ" in car_str: return "📦"
     elif "ส่วนตัว" in car_str: return "🚘"
@@ -357,10 +362,17 @@ def render_booking_calendar(df_book, car_options=None):
                             value=st.session_state['cal_car_checks'][c],
                             key=f"cal_chk_{c}",
                         )
-                st.caption("💡 สี่เหลี่ยมสีหน้าชื่อรถ = สีที่ใช้แยกรถในปฏิทินด้านล่าง | ติ๊กออกที่ \"📦 ไม่ใช้รถ\" เพื่อดูเฉพาะรายการที่ยืมรถจริง")
+                st.caption("💡 สี่เหลี่ยมสีหน้าชื่อรถ = สีที่ใช้แยกรถในปฏิทินด้านล่าง | ติ๊ก \"📦 ไม่ใช้รถ\" เพื่อดูเฉพาะรายการที่ยืมของอย่างเดียว (จะซ่อนรถทั้งหมดโดยอัตโนมัติ)")
             st.write("")
 
-        checked_cars = {c for c, v in st.session_state.get('cal_car_checks', {}).items() if v} if car_options else None
+        _NO_CAR_KEY = "📦 ไม่ใช้รถ (ยืมเฉพาะของ)"
+        _car_checks = st.session_state.get('cal_car_checks', {})
+        if car_options and _car_checks.get(_NO_CAR_KEY, False):
+            # โหมดพิเศษ: ติ๊ก "ไม่ใช้รถ" แล้ว ให้เห็นเฉพาะรายการที่ยืมของอย่างเดียว ไม่โชว์รถเลย
+            checked_cars = {_NO_CAR_KEY}
+            st.caption("👁️ กำลังแสดงเฉพาะรายการที่ยืมของโดยไม่ยืมรถ (ไม่สนใจ checkbox รถคันอื่น)")
+        else:
+            checked_cars = {c for c, v in _car_checks.items() if v} if car_options else None
 
         days_in_month = calendar.monthrange(year, month)[1]
         first_weekday = (date(year, month, 1).weekday() + 1) % 7  # ให้อาทิตย์ = 0
