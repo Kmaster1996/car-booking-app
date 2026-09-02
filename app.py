@@ -367,10 +367,12 @@ def render_booking_calendar(df_book, car_options=None):
 
         _NO_CAR_KEY = "📦 ไม่ใช้รถ (ยืมเฉพาะของ)"
         _car_checks = st.session_state.get('cal_car_checks', {})
-        if car_options and _car_checks.get(_NO_CAR_KEY, False):
-            # โหมดพิเศษ: ติ๊ก "ไม่ใช้รถ" แล้ว ให้เห็นเฉพาะรายการที่ยืมของอย่างเดียว ไม่โชว์รถเลย
-            checked_cars = {_NO_CAR_KEY}
-            st.caption("👁️ กำลังแสดงเฉพาะรายการที่ยืมของโดยไม่ยืมรถ (ไม่สนใจ checkbox รถคันอื่น)")
+        _equipment_only_mode = bool(car_options and _car_checks.get(_NO_CAR_KEY, False))
+        if _equipment_only_mode:
+            # โหมดพิเศษ: ติ๊ก "ไม่ใช้รถ" แล้ว ให้เห็นทุกรายการที่มีการยืมของ
+            # (ไม่ว่าจะยืมรถจริงร่วมด้วยหรือไม่ก็ตาม) ตัดข้อมูลรถออกจากการแสดงผล เหลือแค่ของ
+            checked_cars = None
+            st.caption("👁️ กำลังแสดงเฉพาะรายการที่มีการยืมของ (รวมรายการที่ยืมรถจริงร่วมด้วย) — ไม่สนใจ checkbox รถคันอื่น")
         else:
             checked_cars = {c for c, v in _car_checks.items() if v} if car_options else None
 
@@ -388,8 +390,14 @@ def render_booking_calendar(df_book, car_options=None):
             c.markdown(f"<div style='text-align:center;font-size:12px;font-weight:600;color:{txt_color};padding:6px 0;'>{name}</div>", unsafe_allow_html=True)
         st.markdown("<div style='border-bottom:1px solid rgba(128,128,128,0.25);margin-bottom:6px;'></div>", unsafe_allow_html=True)
 
+        def _has_equipment(equip_str):
+            s = str(equip_str).strip()
+            return s not in ["", "-", "nan", "None", "{}"]
+
         df_valid = df_book.dropna(subset=['Start_Time', 'End_Time']) if not df_book.empty else df_book
-        if checked_cars is not None and not df_valid.empty:
+        if _equipment_only_mode and not df_valid.empty:
+            df_valid = df_valid[df_valid['Equipment'].apply(_has_equipment)]
+        elif checked_cars is not None and not df_valid.empty:
             df_valid = df_valid[df_valid['Car'].isin(checked_cars)]
 
         today = date.today()
@@ -458,8 +466,12 @@ def render_booking_calendar(df_book, car_options=None):
                         else:
                             row = slot['row']
                             btn_key = f"cal_ev_{year}_{month}_{w_idx}_{lane_i}_{slot['idx']}"
-                            color = car_color_hex(row['Car'])
-                            label = f"{get_car_icon(row['Car'])} {car_short_name(row['Car'])} | {row['User']}: {row['Task']}"
+                            if _equipment_only_mode:
+                                color = "#8A8F98"
+                                label = f"📦 {row['User']}: {row['Task']}"
+                            else:
+                                color = car_color_hex(row['Car'])
+                                label = f"{get_car_icon(row['Car'])} {car_short_name(row['Car'])} | {row['User']}: {row['Task']}"
                             style_rules.append(
                                 f".st-key-{btn_key} button {{"
                                 f"background-color:{color} !important;color:#fff !important;border:none !important;"
