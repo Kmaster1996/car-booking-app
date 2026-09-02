@@ -344,7 +344,7 @@ def render_booking_calendar(df_book, car_options=None):
         if car_options:
             short_label = {
                 "🚙 รถส่วนตัว (เบิกค่าน้ำมัน)": "🚙 รถส่วนตัว",
-                "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 ไม่ใช้รถ (ไม่ยืมรถ)",
+                "📦 ไม่ใช้รถ (ยืมเฉพาะของ)": "📦 โหมดพี่ทราย",
             }
             if 'cal_car_checks' not in st.session_state:
                 st.session_state['cal_car_checks'] = {c: True for c in car_options}
